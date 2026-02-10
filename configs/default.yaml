@@ -1,4 +1,15 @@
 model: gpt-oss:120b
+model_fast: qwen2.5:14b-instruct
+model_big: gpt-oss:120b
+prefer_fast: true
+big_triggers:
+  - deep
+  - long
+  - essay
+  - synthesize
+  - thorough
+  - in depth
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
 temperature: 0.2
+timeout_s: 300
