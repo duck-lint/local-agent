@@ -12,7 +12,7 @@ import requests
 import yaml
 
 from agent.protocol import ToolCall, try_parse_tool_call
-from agent.tools import TOOLS, ToolError
+from agent.tools import TOOLS, ToolError, configure_tool_security
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -36,6 +36,13 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "in depth",
         "comprehensive",
     ],
+    "security": {
+        "allowed_roots": ["."],
+        "allowed_exts": [".md", ".txt", ".json"],
+        "deny_absolute_paths": True,
+        "deny_hidden_paths": True,
+        "allow_any_path": False,
+    },
 }
 
 
@@ -360,7 +367,10 @@ def validate_read_text_file_evidence(
     if "error" in tool_result:
         err = tool_result.get("error")
         msg = f"Tool failed: {err}" if isinstance(err, str) else "Tool failed."
-        return None, "TOOL_ERROR", msg + " Confirm the file path and permissions.", "missing"
+        code = tool_result.get("error_code")
+        if not isinstance(code, str) or not code:
+            code = "TOOL_ERROR"
+        return None, code, msg + " Confirm the file path and permissions.", "missing"
 
     required_keys = ("path", "sha256", "chars_full", "chars_returned", "truncated", "text")
     missing = [k for k in required_keys if k not in tool_result]
@@ -588,7 +598,7 @@ def run_ask_one_tool(
                 try:
                     tool_result = tool.func(active_tool_args)
                 except ToolError as exc:
-                    tool_result = {"error": str(exc)}
+                    tool_result = {"error": str(exc), "error_code": exc.code}
                 except Exception as exc:  # defensive: tool crash must be treated as tool failure
                     tool_result = {"error": f"Unhandled tool exception: {exc}"}
 
@@ -660,7 +670,7 @@ def run_ask_one_tool(
                     try:
                         reread_result = tool.func(reread_args)
                     except ToolError as exc:
-                        reread_result = {"error": str(exc)}
+                        reread_result = {"error": str(exc), "error_code": exc.code}
                     except Exception as exc:  # defensive: tool crash must be treated as tool failure
                         reread_result = {"error": f"Unhandled tool exception: {exc}"}
 
@@ -887,6 +897,7 @@ def main() -> int:
 
     args = parser.parse_args()
     cfg = {**DEFAULT_CONFIG, **load_config()}
+    configure_tool_security(cfg.get("security", {}), workspace_root=Path.cwd())
 
     if args.cmd == "chat":
         return run_chat(cfg, args.prompt)

@@ -25,3 +25,17 @@ full_evidence_triggers:
   - failure modes
   - in depth
   - comprehensive
+  - be sure
+  - evidence
+security:
+  allowed_roots:
+    - "corpus/"
+    - "runs/"
+    - "scratch/"
+  allowed_exts:
+    - ".md"
+    - ".txt"
+    - ".json"
+  deny_absolute_paths: true
+  deny_hidden_paths: true
+  allow_any_path: false
