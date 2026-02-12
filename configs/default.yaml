@@ -11,5 +11,17 @@ big_triggers:
   - in depth
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
+max_tokens_big_second: 4500
 temperature: 0.2
 timeout_s: 300
+timeout_s_big_second: 600
+read_full_on_thorough: true
+max_chars_full_read: 200000
+full_evidence_triggers:
+  - deep
+  - thorough
+  - synthesize
+  - implications
+  - failure modes
+  - in depth
+  - comprehensive

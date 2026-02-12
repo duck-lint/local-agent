@@ -21,8 +21,21 @@ DEFAULT_CONFIG: Dict[str, Any] = {
     "max_tokens": 800,
     "temperature": 0.2,
     "timeout_s": 300,
+    "timeout_s_big_second": 600,
+    "max_tokens_big_second": 4500,
+    "read_full_on_thorough": True,
+    "max_chars_full_read": 200000,
     "prefer_fast": True,
     "big_triggers": ["deep", "long", "essay", "synthesize", "thorough", "in depth"],
+    "full_evidence_triggers": [
+        "deep",
+        "thorough",
+        "synthesize",
+        "implications",
+        "failure modes",
+        "in depth",
+        "comprehensive",
+    ],
 }
 
 
@@ -169,6 +182,24 @@ def _as_bool(value: Any, default: bool) -> bool:
     return default
 
 
+def _as_int(value: Any, default: int) -> int:
+    if isinstance(value, bool):
+        return default
+    if isinstance(value, int):
+        return value
+    if isinstance(value, str):
+        try:
+            return int(value.strip())
+        except ValueError:
+            return default
+    return default
+
+
+def _clamp_read_max_chars(value: int) -> int:
+    # read_text_file validates max_chars in [200, 200000]
+    return max(200, min(200_000, int(value)))
+
+
 def get_default_model_for_logs(cfg: Dict[str, Any]) -> str:
     return _as_model_name(cfg.get("model_big")) or _as_model_name(cfg.get("model")) or DEFAULT_CONFIG["model"]
 
@@ -245,6 +276,75 @@ def evidence_required_by_question(question: str) -> bool:
 def requires_nonempty_file_content(question: str) -> bool:
     q = question.lower()
     return bool(re.search(r"\bsummar(?:ize|ise|y)\b|\bsummary\b", q))
+
+
+def question_requires_full_evidence(question: str, cfg: Dict[str, Any]) -> bool:
+    raw_triggers = cfg.get("full_evidence_triggers")
+    if isinstance(raw_triggers, list):
+        triggers = [str(x).strip().lower() for x in raw_triggers if str(x).strip()]
+    else:
+        triggers = [str(x).lower() for x in DEFAULT_CONFIG["full_evidence_triggers"]]
+    q = question.lower()
+    return any(t in q for t in triggers)
+
+
+def build_scope_footer_from_evidence(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
+    if not isinstance(evidence, dict):
+        return None
+    sha256 = evidence.get("sha256")
+    chars_full = evidence.get("chars_full")
+    chars_returned = evidence.get("chars_returned")
+    truncated = evidence.get("truncated")
+    if not isinstance(sha256, str) or len(sha256) < 8:
+        return None
+    if not isinstance(chars_full, int) or not isinstance(chars_returned, int):
+        return None
+    if not isinstance(truncated, bool):
+        return None
+    scope = "partial" if truncated else "full"
+    return (
+        f"Scope: {scope} evidence from read_text_file "
+        f"({chars_returned}/{chars_full}), sha256={sha256[:8]}..."
+    )
+
+
+def has_exact_scope_footer(text: str, expected_footer: Optional[str]) -> bool:
+    if not expected_footer:
+        return True
+    lines = [line.rstrip() for line in text.splitlines() if line.strip()]
+    if not lines:
+        return False
+    return lines[-1].strip() == expected_footer
+
+
+def append_scope_footer(text: str, scope_footer: str) -> str:
+    body = text.rstrip()
+    if not body:
+        return scope_footer
+    return f"{body}\n\n{scope_footer}"
+
+
+def second_pass_violations(text: str) -> List[str]:
+    violations: List[str] = []
+    lines = text.splitlines()
+
+    has_pipe_line = any("|" in line for line in lines)
+    separator_re = re.compile(r"^\s*\|?(\s*:?-+:?\s*\|)+\s*$")
+    has_separator_line = any(separator_re.match(line) for line in lines)
+    if has_pipe_line and has_separator_line:
+        violations.append("MARKDOWN_TABLE")
+    else:
+        consecutive_tableish = 0
+        for line in lines:
+            if line.count("|") >= 3:
+                consecutive_tableish += 1
+                if consecutive_tableish >= 2:
+                    violations.append("MARKDOWN_TABLE")
+                    break
+            else:
+                consecutive_tableish = 0
+
+    return list(dict.fromkeys(violations))
 
 
 def validate_read_text_file_evidence(
@@ -339,6 +439,39 @@ def build_tool_system_prompt() -> str:
     )
 
 
+def build_answer_system_prompt(
+    scope_footer_hint: Optional[str] = None,
+    strict_rewrite_tables: bool = False,
+) -> str:
+    scope_line = (
+        f"The last line must be exactly:\n{scope_footer_hint}\n"
+        if scope_footer_hint
+        else (
+            "The last line must be exactly:\n"
+            "Scope: <full|partial> evidence from read_text_file (chars_returned/chars_full), sha256=<first8>...\n"
+        )
+    )
+    table_line = (
+        "Do not use tables. Use bullet lists instead. If you already wrote a table, rewrite it as bullets.\n"
+        if strict_rewrite_tables
+        else "Do not use markdown tables; use bullets and short paragraphs.\n"
+    )
+    return (
+        "You have already received tool results. Do NOT call tools.\n"
+        "Do NOT output any JSON tool_call object.\n"
+        "Do NOT echo tool results.\n"
+        "Do not describe any content you did not see in the provided tool evidence; if evidence is partial, "
+        "explicitly label the scope.\n"
+        f"{table_line}"
+        "Prefer finishing fewer sections fully over starting many.\n"
+        "Keep the answer concise enough to complete in one response (target <= 1200 words unless the user asks for more).\n"
+        "If nearing output limit, finish the current section and then add one final line:\n"
+        "TRUNCATED: <list any sections you intended but did not complete>.\n"
+        f"{scope_line}"
+        "Write only the final answer to the user's question."
+    )
+
+
 def run_chat(cfg: Dict[str, Any], prompt: str) -> int:
     run_dir = make_run_dir()
     run_id = run_dir.name
@@ -388,6 +521,7 @@ def run_ask_one_tool(
     question: str,
     force_big_second: bool = False,
     force_fast: bool = False,
+    force_full: bool = False,
 ) -> int:
     run_dir = make_run_dir()
     run_id = run_dir.name
@@ -409,6 +543,9 @@ def run_ask_one_tool(
         "tool_trace": [],
         "evidence_required": evidence_required_by_question(question),
         "evidence_status": "missing",
+        "evidence_truncated": None,
+        "evidence_chars_full": None,
+        "evidence_chars_returned": None,
     }
 
     try:
@@ -440,37 +577,42 @@ def run_ask_one_tool(
 
             tool_call: ToolCall = parsed.tool_call
             tool = TOOLS.get(tool_call.name)
+            active_tool_args: Dict[str, Any] = dict(tool_call.args)
             if tool is None:
                 tool_result: Dict[str, Any] = {"error": f"Tool not found: {tool_call.name}"}
             else:
                 # Keep tool payload bounded unless the model explicitly requested otherwise.
                 if tool_call.name == "read_text_file" and "max_chars" not in tool_call.args:
                     tool_call.args["max_chars"] = 12000
+                    active_tool_args = dict(tool_call.args)
                 try:
-                    tool_result = tool.func(tool_call.args)
+                    tool_result = tool.func(active_tool_args)
                 except ToolError as exc:
                     tool_result = {"error": str(exc)}
                 except Exception as exc:  # defensive: tool crash must be treated as tool failure
                     tool_result = {"error": f"Unhandled tool exception: {exc}"}
 
             trace_item: Dict[str, Any] = {
-                "call": {"name": tool_call.name, "args": tool_call.args},
+                "call": {"name": tool_call.name, "args": active_tool_args},
                 "result": redact_tool_result_for_log(tool_result),
             }
             if parsed.trailing_text:
                 trace_item["trailing_text_ignored_preview"] = parsed.trailing_text[:200]
             record["tool_trace"].append(trace_item)
 
+            active_tool_result = tool_result
+            full_evidence_needed = force_full or question_requires_full_evidence(question, cfg)
             require_nonempty = requires_nonempty_file_content(question)
             if tool_call.name == "read_text_file":
-                _, error_code, error_message, evidence_status = validate_read_text_file_evidence(
-                    tool_result=tool_result,
+                evidence_obj, error_code, error_message, evidence_status = validate_read_text_file_evidence(
+                    tool_result=active_tool_result,
                     require_nonempty=require_nonempty,
                 )
             else:
-                if isinstance(tool_result, dict) and "error" in tool_result:
+                evidence_obj = None
+                if isinstance(active_tool_result, dict) and "error" in active_tool_result:
                     error_code = "TOOL_ERROR"
-                    err = tool_result.get("error")
+                    err = active_tool_result.get("error")
                     details = err if isinstance(err, str) else "Tool failed."
                     error_message = f"Tool failed: {details}"
                     evidence_status = "missing"
@@ -493,23 +635,202 @@ def run_ask_one_tool(
                 return_code = 1
                 return return_code
 
+            if tool_call.name == "read_text_file" and evidence_obj is not None:
+                record["evidence_truncated"] = bool(evidence_obj.get("truncated"))
+                record["evidence_chars_full"] = evidence_obj.get("chars_full")
+                record["evidence_chars_returned"] = evidence_obj.get("chars_returned")
+
+                should_auto_reread = bool(evidence_obj.get("truncated")) and (
+                    force_full or (_as_bool(cfg.get("read_full_on_thorough"), True) and full_evidence_needed)
+                )
+                if should_auto_reread and tool is not None:
+                    configured_full_chars = _as_int(
+                        cfg.get("max_chars_full_read"),
+                        int(DEFAULT_CONFIG["max_chars_full_read"]),
+                    )
+                    chars_full = _as_int(evidence_obj.get("chars_full"), 0)
+                    reread_target = chars_full if chars_full > 0 else configured_full_chars
+                    if configured_full_chars > 0:
+                        reread_target = min(reread_target, configured_full_chars)
+                    reread_args = {
+                        "path": evidence_obj.get("path"),
+                        "max_chars": _clamp_read_max_chars(reread_target),
+                    }
+                    active_tool_args = reread_args
+                    try:
+                        reread_result = tool.func(reread_args)
+                    except ToolError as exc:
+                        reread_result = {"error": str(exc)}
+                    except Exception as exc:  # defensive: tool crash must be treated as tool failure
+                        reread_result = {"error": f"Unhandled tool exception: {exc}"}
+
+                    reread_trace: Dict[str, Any] = {
+                        "call": {"name": tool_call.name, "args": reread_args},
+                        "result": redact_tool_result_for_log(reread_result),
+                    }
+                    reread_trace["auto_reread_for_full_evidence"] = True
+                    record["tool_trace"].append(reread_trace)
+
+                    reread_evidence, error_code, error_message, evidence_status = validate_read_text_file_evidence(
+                        tool_result=reread_result,
+                        require_nonempty=require_nonempty,
+                    )
+                    if error_code is not None:
+                        record["evidence_status"] = evidence_status
+                        record["ok"] = False
+                        record["error_code"] = error_code
+                        record["error_message"] = error_message
+                        final_text = make_typed_failure(
+                            error_code=error_code,
+                            error_message=error_message or "Unknown error.",
+                        )
+                        print_output(final_text)
+                        record["assistant_text"] = final_text
+                        record["raw_second"] = None
+                        return_code = 1
+                        return return_code
+
+                    active_tool_result = reread_result
+                    evidence_obj = reread_evidence
+                    if evidence_obj is not None:
+                        record["evidence_truncated"] = bool(evidence_obj.get("truncated"))
+                        record["evidence_chars_full"] = evidence_obj.get("chars_full")
+                        record["evidence_chars_returned"] = evidence_obj.get("chars_returned")
+
+                if full_evidence_needed and evidence_obj is not None and bool(evidence_obj.get("truncated")):
+                    error_code = "EVIDENCE_TRUNCATED"
+                    error_message = (
+                        "File read evidence is truncated for a request requiring full coverage. "
+                        "Re-run with --full or increase max_chars."
+                    )
+                    record["evidence_status"] = "invalid"
+                    record["ok"] = False
+                    record["error_code"] = error_code
+                    record["error_message"] = error_message
+                    final_text = make_typed_failure(error_code=error_code, error_message=error_message)
+                    print_output(final_text)
+                    record["assistant_text"] = final_text
+                    record["raw_second"] = None
+                    return_code = 1
+                    return return_code
+
             record["evidence_status"] = "valid"
+            scope_footer = build_scope_footer_from_evidence(
+                evidence_obj if tool_call.name == "read_text_file" else None
+            )
             canonical_tool_call = json.dumps(
-                {"type": "tool_call", "name": tool_call.name, "args": tool_call.args},
+                {"type": "tool_call", "name": tool_call.name, "args": active_tool_args},
                 ensure_ascii=False,
             )
+            messages[0] = {"role": "system", "content": build_answer_system_prompt(scope_footer_hint=scope_footer)}
             messages.append({"role": "assistant", "content": canonical_tool_call})
-            messages.append({"role": "tool", "content": json.dumps(tool_result, ensure_ascii=False)})
+            messages.append({"role": "tool", "content": json.dumps(active_tool_result, ensure_ascii=False)})
+
+            second_max_tokens = cfg["max_tokens"]
+            second_timeout_s = cfg["timeout_s"]
+            model_big = _as_model_name(cfg.get("model_big")) or ""
+            if force_big_second or (model_big and second_model == model_big):
+                second_big_budget = _as_int(
+                    cfg.get("max_tokens_big_second"),
+                    int(DEFAULT_CONFIG["max_tokens_big_second"]),
+                )
+                second_max_tokens = max(cfg["max_tokens"], second_big_budget)
+                second_big_timeout = _as_int(
+                    cfg.get("timeout_s_big_second"),
+                    int(DEFAULT_CONFIG["timeout_s_big_second"]),
+                )
+                second_timeout_s = max(cfg["timeout_s"], second_big_timeout)
 
             second = ollama_chat(
                 base_url=cfg["ollama_base_url"],
                 model=second_model,
                 messages=messages,
                 temperature=cfg["temperature"],
-                max_tokens=cfg["max_tokens"],
-                timeout_s=cfg["timeout_s"],
+                max_tokens=second_max_tokens,
+                timeout_s=second_timeout_s,
             )
             final_text = get_assistant_text(second)
+            second_parsed = try_parse_tool_call(final_text)
+            if second_parsed is not None:
+                error_code = "UNEXPECTED_TOOL_CALL_SECOND_PASS"
+                error_message = "Model attempted a tool call during final-answer pass."
+                record["ok"] = False
+                record["error_code"] = error_code
+                record["error_message"] = error_message
+                final_text = make_typed_failure(error_code=error_code, error_message=error_message)
+                print_output(final_text)
+                record["assistant_text"] = final_text
+                record["raw_second"] = strip_thinking(second)
+                return_code = 1
+                return return_code
+
+            def second_pass_all_violations(text: str) -> List[str]:
+                violations = second_pass_violations(text)
+                if scope_footer and not has_exact_scope_footer(text, scope_footer):
+                    violations.append("MISSING_SCOPE_FOOTER")
+                return list(dict.fromkeys(violations))
+
+            second_violations = second_pass_all_violations(final_text)
+            if second_violations:
+                record["second_pass_retry"] = True
+                record["second_pass_retry_reason"] = second_violations
+
+                retry_messages = list(messages)
+                retry_messages[0] = {
+                    "role": "system",
+                    "content": build_answer_system_prompt(
+                        scope_footer_hint=scope_footer,
+                        strict_rewrite_tables=True,
+                    ),
+                }
+                second_retry = ollama_chat(
+                    base_url=cfg["ollama_base_url"],
+                    model=second_model,
+                    messages=retry_messages,
+                    temperature=cfg["temperature"],
+                    max_tokens=second_max_tokens,
+                    timeout_s=second_timeout_s,
+                )
+                retry_text = get_assistant_text(second_retry)
+                record["raw_second_retry"] = strip_thinking(second_retry)
+
+                retry_parsed = try_parse_tool_call(retry_text)
+                if retry_parsed is not None:
+                    error_code = "UNEXPECTED_TOOL_CALL_SECOND_PASS"
+                    error_message = "Model attempted a tool call during final-answer pass."
+                    record["ok"] = False
+                    record["error_code"] = error_code
+                    record["error_message"] = error_message
+                    final_text = make_typed_failure(error_code=error_code, error_message=error_message)
+                    print_output(final_text)
+                    record["assistant_text"] = final_text
+                    record["raw_second"] = strip_thinking(second)
+                    return_code = 1
+                    return return_code
+
+                retry_violations = second_pass_all_violations(retry_text)
+                if retry_violations == ["MISSING_SCOPE_FOOTER"] and scope_footer:
+                    retry_text = append_scope_footer(retry_text, scope_footer)
+                    record["scope_footer_appended"] = True
+                    retry_violations = second_pass_all_violations(retry_text)
+
+                if retry_violations:
+                    error_code = "SECOND_PASS_FORMAT_VIOLATION"
+                    error_message = (
+                        "Second-pass output violated required format: "
+                        f"{', '.join(retry_violations)}"
+                    )
+                    record["ok"] = False
+                    record["error_code"] = error_code
+                    record["error_message"] = error_message
+                    final_text = make_typed_failure(error_code=error_code, error_message=error_message)
+                    print_output(final_text)
+                    record["assistant_text"] = final_text
+                    record["raw_second"] = strip_thinking(second)
+                    return_code = 1
+                    return return_code
+
+                final_text = retry_text
         elif record["evidence_required"]:
             error_code = "EVIDENCE_NOT_ACQUIRED"
             error_message = (
@@ -562,6 +883,7 @@ def main() -> int:
     ask_speed_group = p_ask.add_mutually_exclusive_group()
     ask_speed_group.add_argument("--big", action="store_true", help="Force big model for the second ask call.")
     ask_speed_group.add_argument("--fast", action="store_true", help="Force fast model for both ask calls.")
+    p_ask.add_argument("--full", action="store_true", help="Force a full file read when read_text_file is used.")
 
     args = parser.parse_args()
     cfg = {**DEFAULT_CONFIG, **load_config()}
@@ -574,6 +896,7 @@ def main() -> int:
             args.question,
             force_big_second=bool(getattr(args, "big", False)),
             force_fast=bool(getattr(args, "fast", False)),
+            force_full=bool(getattr(args, "full", False)),
         )
     parser.print_help()
     return 2
