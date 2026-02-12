@@ -16,14 +16,22 @@ The `read_text_file` tool is sandboxed by `security` config in `configs/default.
 
 ## Manual checks
 
-1. Allowed read (under allowlisted roots):
+1. Allowed read by bare filename (searched within allowlisted roots):
 `python -m agent ask "Read secret.md and summarize it."`
 Place the file at `corpus/secret.md` (or another allowlisted root).
 
-2. Workspace-root file denied when root is not allowlisted:
+2. Allowed read by explicit subpath (workspace-relative, still sandboxed):
+`python -m agent ask "Read corpus/secret.md and summarize it."`
+
+3. Ambiguous bare filename denial:
+Put `dupe.md` in two allowlisted roots (for example `corpus/dupe.md` and `scratch/dupe.md`), then run:
+`python -m agent ask "Read dupe.md and summarize it."`
+Expected: typed failure with `error_code` `AMBIGUOUS_PATH`. Use explicit subpath to disambiguate.
+
+4. Workspace-root file denied when root is not allowlisted:
 `python -m agent ask "Read secret.md and summarize it."`
 
-3. Traversal/outside-root denial:
+5. Traversal/outside-root denial:
 `python -m agent ask "Read ../../etc/passwd and summarize it."`
 
 Expected denied responses are typed failures with `error_code` such as `PATH_DENIED`, `FILE_NOT_FOUND`, or `CONFIG_ERROR`.

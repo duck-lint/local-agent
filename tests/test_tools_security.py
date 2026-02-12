@@ -55,6 +55,38 @@ class ReadTextFileSecurityTests(unittest.TestCase):
         self.assertEqual(result["text"], "hello")
         self.assertIn("sha256", result)
 
+    def test_explicit_subpath_allowed(self) -> None:
+        self._configure()
+        p = self.allowed_root / "corpus" / "nested" / "ok.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("nested ok", encoding="utf-8")
+
+        result = _read_text_file({"path": "corpus/nested/ok.md"})
+        self.assertEqual(result["path"], str(p.resolve()))
+        self.assertEqual(result["text"], "nested ok")
+
+    def test_ambiguous_filename_denied(self) -> None:
+        self._configure()
+        p1 = self.allowed_root / "corpus" / "dupe.md"
+        p2 = self.allowed_root / "scratch" / "dupe.md"
+        p1.write_text("one", encoding="utf-8")
+        p2.write_text("two", encoding="utf-8")
+
+        with self.assertRaises(ToolError) as cm:
+            _read_text_file({"path": "dupe.md"})
+        self.assertEqual(cm.exception.code, "AMBIGUOUS_PATH")
+        self.assertIn(str(p1.resolve()), str(cm.exception))
+        self.assertIn(str(p2.resolve()), str(cm.exception))
+
+    def test_denies_dotenv_no_ext(self) -> None:
+        self._configure()
+        p = self.allowed_root / "corpus" / ".env"
+        p.write_text("SECRET=1\n", encoding="utf-8")
+
+        with self.assertRaises(ToolError) as cm:
+            _read_text_file({"path": "corpus/.env"})
+        self.assertEqual(cm.exception.code, "PATH_DENIED")
+
     def test_traversal_blocked(self) -> None:
         self._configure()
         secret = self.tmp_path / "secret.md"
