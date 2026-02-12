@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import os
 import re
 from dataclasses import dataclass
 from pathlib import Path
@@ -38,7 +39,7 @@ class ReadTextFilePolicy:
 
 DEFAULT_ALLOWED_EXTS = {".md", ".txt", ".json"}
 _READ_TEXT_FILE_POLICY = ReadTextFilePolicy(
-    allowed_roots=[Path.cwd().resolve()],
+    allowed_roots=[],
     allowed_exts=set(DEFAULT_ALLOWED_EXTS),
     deny_absolute_paths=True,
     deny_hidden_paths=True,
@@ -88,10 +89,12 @@ def configure_tool_security(policy_dict: dict, workspace_root: Path) -> None:
 
     raw = policy_dict if isinstance(policy_dict, dict) else {}
     workspace = workspace_root.resolve()
+    auto_create_allowed_roots = bool(raw.get("auto_create_allowed_roots", False))
+    roots_must_be_within_workspace = bool(raw.get("roots_must_be_within_workspace", False))
 
-    roots_raw = raw.get("allowed_roots", ["."])
-    if not isinstance(roots_raw, list) or not roots_raw:
-        roots_raw = ["."]
+    roots_raw = raw.get("allowed_roots", [])
+    if not isinstance(roots_raw, list):
+        roots_raw = []
 
     roots: list[Path] = []
     for item in roots_raw:
@@ -101,15 +104,26 @@ def configure_tool_security(policy_dict: dict, workspace_root: Path) -> None:
         p = Path(txt).expanduser()
         if not p.is_absolute():
             p = workspace / p
+
+        p_abs = Path(os.path.abspath(str(p)))
+        if roots_must_be_within_workspace and not _is_within(p_abs, workspace):
+            continue
+
+        if auto_create_allowed_roots:
+            try:
+                p_abs.mkdir(parents=True, exist_ok=True)
+            except OSError:
+                continue
+
         try:
-            r = p.resolve()
-        except OSError:
+            r = p_abs.resolve(strict=True)
+        except (FileNotFoundError, OSError):
             continue
         if r.exists() and r.is_dir():
             roots.append(r)
 
     if not roots:
-        roots = [workspace]
+        raise ValueError("No valid allowed_roots. Create corpus/ runs/ scratch/ or update configs/default.yaml.")
 
     _READ_TEXT_FILE_POLICY = ReadTextFilePolicy(
         allowed_roots=roots,
@@ -126,7 +140,7 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
 
     if policy.allow_any_path:
         try:
-            candidate = requested_path.resolve(strict=False)
+            candidate = Path(os.path.abspath(str(requested_path)))
         except OSError as exc:
             raise ToolError("PATH_DENIED", f"Invalid path: {requested}") from exc
         return _validate_existing_file(candidate)
@@ -148,31 +162,31 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
             tentative = base_resolved / requested_path
 
         try:
-            tentative_resolved = tentative.resolve(strict=False)
+            tentative_abs = Path(os.path.abspath(str(tentative)))
         except OSError as exc:
             raise ToolError("PATH_DENIED", f"Invalid path: {requested}") from exc
 
-        if not _is_within(tentative_resolved, base_resolved):
+        if not _is_within(tentative_abs, base_resolved):
             outside_allowed_roots = True
             continue
 
-        suffix = tentative_resolved.suffix.lower()
+        suffix = tentative_abs.suffix.lower()
         if policy.allowed_exts and suffix not in policy.allowed_exts:
             shown = suffix if suffix else "<none>"
             raise ToolError("PATH_DENIED", f"Path extension '{shown}' is denied by policy.")
 
         if policy.deny_hidden_paths:
-            rel = tentative_resolved.relative_to(base_resolved)
+            rel = tentative_abs.relative_to(base_resolved)
             if any(part.startswith(".") for part in rel.parts):
                 raise ToolError("PATH_DENIED", "Hidden paths are denied by policy.")
 
-        if not tentative.exists():
+        if not tentative_abs.exists():
             file_missing_inside_root = True
             continue
 
         try:
-            candidate = tentative.resolve(strict=True)
-        except FileNotFoundError:
+            candidate = tentative_abs.resolve(strict=True)
+        except (FileNotFoundError, OSError):
             file_missing_inside_root = True
             continue
         if not _is_within(candidate, base_resolved):

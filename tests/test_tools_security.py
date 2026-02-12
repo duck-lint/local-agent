@@ -19,6 +19,9 @@ class ReadTextFileSecurityTests(unittest.TestCase):
         self.tmp_path = Path(self._tmp.name)
         self.allowed_root = self.tmp_path / "allowed_root"
         self.allowed_root.mkdir(parents=True, exist_ok=True)
+        (self.allowed_root / "corpus").mkdir(parents=True, exist_ok=True)
+        (self.allowed_root / "runs").mkdir(parents=True, exist_ok=True)
+        (self.allowed_root / "scratch").mkdir(parents=True, exist_ok=True)
         os.chdir(self.allowed_root)
 
     def tearDown(self) -> None:
@@ -33,13 +36,15 @@ class ReadTextFileSecurityTests(unittest.TestCase):
                 "deny_absolute_paths": True,
                 "deny_hidden_paths": True,
                 "allow_any_path": False,
+                "auto_create_allowed_roots": False,
+                "roots_must_be_within_workspace": True,
             },
             workspace_root=Path.cwd(),
         )
 
     def test_allowed_read(self) -> None:
         self._configure()
-        p = self.allowed_root / "safe.md"
+        p = self.allowed_root / "corpus" / "safe.md"
         p.write_text("hello", encoding="utf-8")
 
         result = _read_text_file({"path": "safe.md"})
@@ -73,7 +78,7 @@ class ReadTextFileSecurityTests(unittest.TestCase):
         self._configure()
         secret = self.tmp_path / "secret.md"
         secret.write_text("secret", encoding="utf-8")
-        link = self.allowed_root / "link.md"
+        link = self.allowed_root / "corpus" / "link.md"
         os.symlink(secret, link)
 
         with self.assertRaises(ToolError) as cm:
@@ -82,7 +87,7 @@ class ReadTextFileSecurityTests(unittest.TestCase):
 
     def test_extension_blocked(self) -> None:
         self._configure()
-        p = self.allowed_root / "safe.yaml"
+        p = self.allowed_root / "corpus" / "safe.yaml"
         p.write_text("x: 1\n", encoding="utf-8")
 
         with self.assertRaises(ToolError) as cm:
@@ -91,12 +96,37 @@ class ReadTextFileSecurityTests(unittest.TestCase):
 
     def test_hidden_path_blocked(self) -> None:
         self._configure()
-        p = self.allowed_root / ".secret.md"
+        p = self.allowed_root / "corpus" / ".secret.md"
         p.write_text("hidden", encoding="utf-8")
 
         with self.assertRaises(ToolError) as cm:
             _read_text_file({"path": ".secret.md"})
         self.assertEqual(cm.exception.code, "PATH_DENIED")
+
+    def test_workspace_root_file_denied_when_not_allowlisted(self) -> None:
+        self._configure()
+        p = self.allowed_root / "safe.md"
+        p.write_text("root", encoding="utf-8")
+
+        with self.assertRaises(ToolError) as cm:
+            _read_text_file({"path": "safe.md"})
+        self.assertEqual(cm.exception.code, "FILE_NOT_FOUND")
+
+    def test_misconfigured_roots_fail_closed(self) -> None:
+        with self.assertRaises(ValueError) as cm:
+            configure_tool_security(
+                {
+                    "allowed_roots": ["does_not_exist/"],
+                    "allowed_exts": [".md", ".txt", ".json"],
+                    "deny_absolute_paths": True,
+                    "deny_hidden_paths": True,
+                    "allow_any_path": False,
+                    "auto_create_allowed_roots": False,
+                    "roots_must_be_within_workspace": True,
+                },
+                workspace_root=Path.cwd(),
+            )
+        self.assertIn("No valid allowed_roots", str(cm.exception))
 
 
 if __name__ == "__main__":

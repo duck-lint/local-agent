@@ -39,3 +39,5 @@ security:
   deny_absolute_paths: true
   deny_hidden_paths: true
   allow_any_path: false
+  auto_create_allowed_roots: true
+  roots_must_be_within_workspace: true
