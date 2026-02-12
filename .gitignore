@@ -4,3 +4,4 @@ __py*/
 runs/
 corpus/
 scratch/
+secret*
