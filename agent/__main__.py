@@ -787,6 +787,12 @@ def run_ask_one_tool(
                 return list(dict.fromkeys(violations))
 
             second_violations = second_pass_all_violations(final_text)
+            # fast-path: avoid retry call if only missing scope footer
+            if scope_footer and second_violations == ["MISSING_SCOPE_FOOTER"]:
+                final_text = append_scope_footer(final_text, scope_footer)
+                record["scope_footer_appended"] = True
+                second_violations = second_pass_all_violations(final_text)
+
             if second_violations:
                 record["second_pass_retry"] = True
                 record["second_pass_retry_reason"] = second_violations
