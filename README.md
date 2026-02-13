@@ -216,7 +216,7 @@ Retry behavior:
 Scope footer format:
 
 ```text
-Scope: full evidence from read_text_file (5159/5159), sha256=14e424b8...
+Scope: full evidence from read_text_file (5159/5159), sha256=14e424b8f1f06f8c2e2f43867f52f37f6ffb95f8434f743f2a94f367a7d2c999
 ```
 
 ## Run logging and auditability

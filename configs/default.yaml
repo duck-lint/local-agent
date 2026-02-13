@@ -9,6 +9,8 @@ big_triggers:
   - synthesize
   - thorough
   - in depth
+  - detailed
+  - analysis
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
 max_tokens_big_second: 4500

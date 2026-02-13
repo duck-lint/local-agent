@@ -313,7 +313,7 @@ def build_scope_footer_from_evidence(evidence: Optional[Dict[str, Any]]) -> Opti
     scope = "partial" if truncated else "full"
     return (
         f"Scope: {scope} evidence from read_text_file "
-        f"({chars_returned}/{chars_full}), sha256={sha256[:8]}..."
+        f"({chars_returned}/{chars_full}), sha256={sha256}"
     )
 
 
@@ -331,6 +331,43 @@ def append_scope_footer(text: str, scope_footer: str) -> str:
     if not body:
         return scope_footer
     return f"{body}\n\n{scope_footer}"
+
+
+def ensure_canonical_scope_footer_tail(text: str, scope_footer: str) -> Tuple[str, bool]:
+    had_trailing_newline = text.endswith("\n")
+    lines = text.splitlines()
+    changed = False
+
+    while lines and not lines[-1].strip():
+        lines.pop()
+        changed = True
+
+    # If the current tail is already canonical and not part of a duplicate
+    # trailing Scope block, keep it unchanged.
+    if lines and lines[-1] == scope_footer:
+        if len(lines) == 1 or not lines[-2].lstrip().startswith("Scope:"):
+            if not changed and had_trailing_newline:
+                return text, False
+            out = "\n".join(lines)
+            if had_trailing_newline:
+                out += "\n"
+            else:
+                out += "\n"
+                changed = True
+            return out, changed
+
+    while lines and lines[-1].lstrip().startswith("Scope:"):
+        lines.pop()
+        changed = True
+
+    if not lines or lines[-1] != scope_footer:
+        lines.append(scope_footer)
+        changed = True
+
+    out = "\n".join(lines)
+    if not out.endswith("\n"):
+        out += "\n"
+    return out, changed
 
 
 def second_pass_violations(text: str) -> List[str]:
@@ -460,7 +497,7 @@ def build_answer_system_prompt(
         if scope_footer_hint
         else (
             "The last line must be exactly:\n"
-            "Scope: <full|partial> evidence from read_text_file (chars_returned/chars_full), sha256=<first8>...\n"
+            "Scope: <full|partial> evidence from read_text_file (chars_returned/chars_full), sha256=<64hex>\n"
         )
     )
     table_line = (
@@ -779,6 +816,10 @@ def run_ask_one_tool(
                 record["raw_second"] = strip_thinking(second)
                 return_code = 1
                 return return_code
+            if scope_footer:
+                final_text, did_change = ensure_canonical_scope_footer_tail(final_text, scope_footer)
+                if did_change:
+                    record["scope_footer_canonicalized"] = True
 
             def second_pass_all_violations(text: str) -> List[str]:
                 violations = second_pass_violations(text)
@@ -789,7 +830,7 @@ def run_ask_one_tool(
             second_violations = second_pass_all_violations(final_text)
             # fast-path: avoid retry call if only missing scope footer
             if scope_footer and second_violations == ["MISSING_SCOPE_FOOTER"]:
-                final_text = append_scope_footer(final_text, scope_footer)
+                final_text = ensure_canonical_scope_footer_tail(final_text, scope_footer)[0]
                 record["scope_footer_appended"] = True
                 second_violations = second_pass_all_violations(final_text)
 
@@ -832,7 +873,7 @@ def run_ask_one_tool(
 
                 retry_violations = second_pass_all_violations(retry_text)
                 if retry_violations == ["MISSING_SCOPE_FOOTER"] and scope_footer:
-                    retry_text = append_scope_footer(retry_text, scope_footer)
+                    retry_text = ensure_canonical_scope_footer_tail(retry_text, scope_footer)[0]
                     record["scope_footer_appended"] = True
                     retry_violations = second_pass_all_violations(retry_text)
 
