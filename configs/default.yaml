@@ -35,8 +35,7 @@ full_evidence_triggers:
 security:
   allowed_roots:
     - "../local-agent-workroot/runs/"
-    - "../local-agent-workroot/allowed/corpus/"
-    - "../local-agent-workroot/allowed/scratch/"
+    - "../local-agent-workroot/allowed/"
   allowed_exts:
     - ".md"
     - ".txt"
