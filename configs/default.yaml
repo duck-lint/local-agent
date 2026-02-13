@@ -17,8 +17,11 @@ max_tokens_big_second: 4500
 temperature: 0.2
 timeout_s: 300
 timeout_s_big_second: 600
+# Deprecated/ignored: full evidence is now default (kept for config compatibility).
 read_full_on_thorough: true
+# Active knob: first read requests this many chars (clamped to tool hard cap).
 max_chars_full_read: 200000
+# Deprecated/ignored: full evidence no longer uses question trigger lists.
 full_evidence_triggers:
   - deep
   - thorough
@@ -31,9 +34,9 @@ full_evidence_triggers:
   - evidence
 security:
   allowed_roots:
-    - "corpus/"
-    - "runs/"
-    - "scratch/"
+    - "../local-agent-workroot/runs/"
+    - "../local-agent-workroot/allowed/corpus/"
+    - "../local-agent-workroot/allowed/scratch/"
   allowed_exts:
     - ".md"
     - ".txt"
@@ -42,4 +45,5 @@ security:
   deny_hidden_paths: true
   allow_any_path: false
   auto_create_allowed_roots: true
-  roots_must_be_within_workspace: true
+  roots_must_be_within_security_root: true
+workroot: "../local-agent-workroot/"

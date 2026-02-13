@@ -1,0 +1,18 @@
+[build-system]
+requires = ["setuptools>=61", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "local-agent"
+version = "0.1.0"
+description = "Security-focused local evidence-gated CLI agent for Ollama."
+readme = "README.md"
+requires-python = ">=3.11"
+dependencies = ["requests", "PyYAML"]
+
+[project.scripts]
+local-agent = "agent.__main__:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["agent*"]

@@ -37,7 +37,7 @@ class ReadTextFileSecurityTests(unittest.TestCase):
                 "deny_hidden_paths": True,
                 "allow_any_path": False,
                 "auto_create_allowed_roots": False,
-                "roots_must_be_within_workspace": True,
+                "roots_must_be_within_security_root": True,
             },
             workspace_root=Path.cwd(),
         )
@@ -172,11 +172,60 @@ class ReadTextFileSecurityTests(unittest.TestCase):
                     "deny_hidden_paths": True,
                     "allow_any_path": False,
                     "auto_create_allowed_roots": False,
-                    "roots_must_be_within_workspace": True,
+                    "roots_must_be_within_security_root": True,
                 },
                 workspace_root=Path.cwd(),
             )
         self.assertIn("No valid allowed_roots", str(cm.exception))
+
+    def test_outside_root_fails_loudly_when_containment_enabled(self) -> None:
+        outside = self.tmp_path / "outside_root"
+        outside.mkdir(parents=True, exist_ok=True)
+        cfg_path = self.tmp_path / "repo" / "configs" / "default.yaml"
+
+        with self.assertRaises(ValueError) as cm:
+            configure_tool_security(
+                {
+                    "allowed_roots": [str(outside)],
+                    "allowed_exts": [".md", ".txt", ".json"],
+                    "deny_absolute_paths": True,
+                    "deny_hidden_paths": True,
+                    "allow_any_path": False,
+                    "auto_create_allowed_roots": False,
+                    "roots_must_be_within_security_root": True,
+                },
+                workspace_root=self.allowed_root,
+                resolved_config_path=cfg_path,
+            )
+
+        msg = str(cm.exception)
+        self.assertIn("security_root", msg)
+        self.assertIn(str(self.allowed_root.resolve()), msg)
+        self.assertIn(str(outside.resolve()), msg)
+        self.assertIn(str(cfg_path.resolve()), msg)
+
+    def test_outside_root_allowed_when_containment_disabled(self) -> None:
+        outside = self.tmp_path / "outside_root"
+        outside.mkdir(parents=True, exist_ok=True)
+        target = outside / "outside.md"
+        target.write_text("outside allowed", encoding="utf-8")
+
+        configure_tool_security(
+            {
+                "allowed_roots": [str(outside)],
+                "allowed_exts": [".md", ".txt", ".json"],
+                "deny_absolute_paths": True,
+                "deny_hidden_paths": True,
+                "allow_any_path": False,
+                "auto_create_allowed_roots": False,
+                "roots_must_be_within_security_root": False,
+            },
+            workspace_root=self.allowed_root,
+        )
+
+        result = _read_text_file({"path": "outside.md"})
+        self.assertEqual(result["path"], str(target.resolve()))
+        self.assertEqual(result["text"], "outside allowed")
 
 
 if __name__ == "__main__":

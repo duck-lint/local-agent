@@ -155,7 +155,7 @@ Controls:
 - deny absolute/anchored paths (`deny_absolute_paths`)
 - deny hidden path segments (`deny_hidden_paths`)
 - optional emergency bypass (`allow_any_path`, default false)
-- root validation behavior (`auto_create_allowed_roots`, `roots_must_be_within_workspace`)
+- root validation behavior (`auto_create_allowed_roots`, `roots_must_be_within_security_root`)
 
 Path request styles:
 
@@ -245,18 +245,36 @@ Redaction rule:
 Requirements:
 - Python 3.10+ (3.11 recommended)
 - Ollama running locally (default `http://127.0.0.1:11434`)
-- models configured in `configs/default.yaml` available in Ollama
+- repo config available at `configs/default.yaml` (always used; see Config location below)
 - dependencies: `requests`, `pyyaml`
 
-Install:
+Install (editable):
 
 ```bash
 python -m venv .venv
-.venv\\Scripts\\python -m pip install -U pip
-.venv\\Scripts\\python -m pip install requests pyyaml
+.\.venv\Scripts\activate
+pip install -e .
 ```
 
-On Linux/macOS, use `.venv/bin/python`.
+On Linux/macOS, use:
+
+```bash
+source .venv/bin/activate
+pip install -e .
+```
+
+Config location (important):
+- Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
+- Launch directory does not change which config file is selected.
+- Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
+
+Split repo/workroot setup (no workroot config required):
+- Keep your single live config in repo: `local-agent/configs/default.yaml`.
+- Point `security.allowed_roots` at your sibling workroot data folders (already set in this repo):
+  - `../local-agent-workroot/allowed/corpus/`
+  - `../local-agent-workroot/allowed/runs/`
+  - `../local-agent-workroot/allowed/scratch/`
+- Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
 
 Ensure allowlisted dirs exist (or keep `auto_create_allowed_roots: true`):
 
@@ -271,6 +289,8 @@ Smoke test:
 ```bash
 .venv\\Scripts\\python -m agent chat "ping"
 .venv\\Scripts\\python -m agent ask "Read secret.md and summarize it."
+local-agent ask "Read secret.md and summarize it."
+local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it."
 ```
 
 ## CLI usage and recipes
@@ -280,6 +300,9 @@ Basic:
 ```bash
 python -m agent chat "<prompt>"
 python -m agent ask "<question>"
+local-agent chat "<prompt>"
+local-agent ask "<question>"
+local-agent --workroot ../local-agent-workroot ask "<question>"
 ```
 
 `ask` flags:
@@ -328,7 +351,7 @@ Security (`security:`):
 - `deny_hidden_paths`
 - `allow_any_path`
 - `auto_create_allowed_roots`
-- `roots_must_be_within_workspace`
+- `roots_must_be_within_security_root`
 
 Current defaults in this repo are intentionally conservative:
 - only `.md`, `.txt`, `.json` reads
@@ -365,6 +388,7 @@ Frequent codes and first checks:
 
 Debug tip:
 - open latest `runs/<run_id>/run.json`
+- inspect `resolved_config_path`, `config_root`, `package_root`, `workroot`, and `security_root` first
 - inspect `tool_trace`, `evidence_status`, `raw_first`, `raw_second`, and retry fields
 
 ## Testing and verification

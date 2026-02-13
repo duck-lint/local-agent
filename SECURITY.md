@@ -9,7 +9,7 @@ The `read_text_file` tool is sandboxed by `security` config in `configs/default.
 - `auto_create_allowed_roots`:
   - `true`: missing allowlisted roots are created at startup.
   - `false`: missing roots are ignored.
-- `roots_must_be_within_workspace`:
+- `roots_must_be_within_security_root`:
   - `true`: any root outside the workspace is rejected.
 - If no valid roots remain after validation, startup fails with:
   - `{"ok": false, "error_code": "CONFIG_ERROR", ...}`

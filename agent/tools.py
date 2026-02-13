@@ -85,14 +85,18 @@ def _validate_existing_file(path: Path) -> Path:
     return path
 
 
-def configure_tool_security(policy_dict: dict, workspace_root: Path) -> None:
+def configure_tool_security(
+    policy_dict: dict,
+    workspace_root: Path,
+    resolved_config_path: Optional[Path] = None,
+) -> None:
     global _READ_TEXT_FILE_POLICY, _WORKSPACE_ROOT
 
     raw = policy_dict if isinstance(policy_dict, dict) else {}
     workspace = workspace_root.resolve()
     _WORKSPACE_ROOT = workspace
     auto_create_allowed_roots = bool(raw.get("auto_create_allowed_roots", False))
-    roots_must_be_within_workspace = bool(raw.get("roots_must_be_within_workspace", False))
+    roots_must_be_within_security_root = bool(raw.get("roots_must_be_within_security_root", True))
 
     roots_raw = raw.get("allowed_roots", [])
     if not isinstance(roots_raw, list):
@@ -108,8 +112,16 @@ def configure_tool_security(policy_dict: dict, workspace_root: Path) -> None:
             p = workspace / p
 
         p_abs = Path(os.path.abspath(str(p)))
-        if roots_must_be_within_workspace and not _is_within(p_abs, workspace):
-            continue
+        if roots_must_be_within_security_root and not _is_within(p_abs, workspace):
+            cfg_path = (
+                str(resolved_config_path.resolve())
+                if resolved_config_path is not None
+                else "<unknown>"
+            )
+            raise ValueError(
+                "allowed_root escapes security_root "
+                f"(security_root={workspace}, offending_root={p_abs}, resolved_config_path={cfg_path})"
+            )
 
         if auto_create_allowed_roots:
             try:

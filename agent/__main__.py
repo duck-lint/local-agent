@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import os
 import re
 import sys
 import time
@@ -43,28 +44,133 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "deny_hidden_paths": True,
         "allow_any_path": False,
         "auto_create_allowed_roots": True,
-        "roots_must_be_within_workspace": True,
+        "roots_must_be_within_security_root": True,
     },
 }
 
+READ_TEXT_FILE_HARD_CAP = 200_000
+WORKROOT_ENV_VAR = "LOCAL_AGENT_WORKROOT"
 
-def load_config() -> Dict[str, Any]:
-    cfg_path = Path("configs") / "default.yaml"
-    if not cfg_path.exists():
-        return {}
+
+def discover_config_path(
+    start_dir: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+) -> Optional[Path]:
+    _ = start_dir  # Kept for compatibility with existing callers/tests.
+    root = (repo_root or Path(__file__).resolve().parent.parent).resolve()
+    candidate = root / "configs" / "default.yaml"
+    if candidate.exists():
+        return candidate
+    return None
+
+
+def load_config_with_path(
+    start_dir: Optional[Path] = None,
+    repo_root: Optional[Path] = None,
+) -> Tuple[Dict[str, Any], Optional[Path]]:
+    cfg_path = discover_config_path(start_dir=start_dir, repo_root=repo_root)
+    if cfg_path is None:
+        return {}, None
     with cfg_path.open("r", encoding="utf-8") as f:
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
-        raise ValueError("configs/default.yaml must contain a mapping/object")
-    return data
+        raise ValueError(f"{cfg_path}: configs/default.yaml must contain a mapping/object")
+    return data, cfg_path
+
+
+def load_config() -> Dict[str, Any]:
+    return load_config_with_path()[0]
+
+
+def config_root_from_config_path(config_path: Optional[Path]) -> Optional[Path]:
+    if config_path is not None:
+        cfg_parent = config_path.resolve().parent
+        if cfg_parent.name.lower() == "configs":
+            return cfg_parent.parent
+        return cfg_parent
+    return None
+
+
+def workspace_root_from_config_path(config_path: Optional[Path], fallback: Optional[Path] = None) -> Path:
+    # Backward-compatible alias for older tests/callers.
+    return config_root_from_config_path(config_path) or (fallback or Path.cwd()).resolve()
+
+
+def _string_config_value(value: Any) -> Optional[str]:
+    if value is None:
+        return None
+    txt = str(value).strip()
+    return txt or None
+
+
+def _resolve_candidate_root(raw_value: Optional[str], base_dir: Path) -> Optional[Path]:
+    if raw_value is None:
+        return None
+    p = Path(raw_value).expanduser()
+    if not p.is_absolute():
+        p = base_dir / p
+    return p.resolve()
+
+
+def resolve_runtime_roots(
+    resolved_config_path: Optional[Path],
+    cfg: Dict[str, Any],
+    cli_workroot: Optional[str],
+    cwd: Optional[Path] = None,
+    env_workroot: Optional[str] = None,
+    package_root: Optional[Path] = None,
+) -> Dict[str, Optional[Path]]:
+    cwd_resolved = (cwd or Path.cwd()).resolve()
+    package_root_resolved = (package_root or Path(__file__).resolve().parent.parent).resolve()
+    config_root = config_root_from_config_path(resolved_config_path)
+
+    cli_value = _string_config_value(cli_workroot)
+    env_value = _string_config_value(env_workroot if env_workroot is not None else os.environ.get(WORKROOT_ENV_VAR))
+    cfg_value = _string_config_value(cfg.get("workroot"))
+
+    selected_workroot = cli_value or env_value or cfg_value
+    relative_base = config_root or cwd_resolved
+    workroot = _resolve_candidate_root(selected_workroot, relative_base)
+    security_root = workroot or config_root or cwd_resolved
+
+    return {
+        "config_root": config_root,
+        "package_root": package_root_resolved,
+        "workroot": workroot,
+        "security_root": security_root,
+    }
+
+
+def _path_to_str(path: Optional[Path]) -> Optional[str]:
+    return str(path.resolve()) if path is not None else None
+
+
+def root_log_fields(roots: Dict[str, Optional[Path]]) -> Dict[str, Optional[str]]:
+    return {
+        "config_root": _path_to_str(roots.get("config_root")),
+        "package_root": _path_to_str(roots.get("package_root")),
+        "workroot": _path_to_str(roots.get("workroot")),
+        "security_root": _path_to_str(roots.get("security_root")),
+    }
+
+
+def select_reread_path(original_tool_args: Dict[str, Any], evidence_obj: Dict[str, Any]) -> str:
+    requested_path = original_tool_args.get("path")
+    if isinstance(requested_path, str) and requested_path.strip():
+        return requested_path
+
+    evidence_path = evidence_obj.get("path")
+    if isinstance(evidence_path, str) and evidence_path.strip():
+        return evidence_path
+    return ""
 
 
 def make_run_id() -> str:
     return time.strftime("%Y%m%d_%H%M%S")
 
 
-def make_run_dir() -> Path:
-    base = Path("runs")
+def make_run_dir(security_root: Path) -> Path:
+    base = security_root.resolve() / "runs"
     run_id = make_run_id()
     run_dir = base / run_id
     if not run_dir.exists():
@@ -206,7 +312,54 @@ def _as_int(value: Any, default: int) -> int:
 
 def _clamp_read_max_chars(value: int) -> int:
     # read_text_file validates max_chars in [200, 200000]
-    return max(200, min(200_000, int(value)))
+    return max(200, min(READ_TEXT_FILE_HARD_CAP, int(value)))
+
+
+def compute_initial_read_max_chars(cfg: Dict[str, Any]) -> int:
+    configured = _as_int(cfg.get("max_chars_full_read"), int(DEFAULT_CONFIG["max_chars_full_read"]))
+    return _clamp_read_max_chars(configured)
+
+
+def compute_reread_max_chars(evidence_obj: Dict[str, Any], initial_max_chars: int) -> Optional[int]:
+    if not isinstance(evidence_obj, dict):
+        return None
+    if not bool(evidence_obj.get("truncated")):
+        return None
+    chars_full = _as_int(evidence_obj.get("chars_full"), 0)
+    chars_returned = _as_int(evidence_obj.get("chars_returned"), 0)
+    if chars_full <= chars_returned:
+        return None
+    if chars_full <= initial_max_chars:
+        return None
+    reread_target = min(chars_full, READ_TEXT_FILE_HARD_CAP)
+    if reread_target <= initial_max_chars:
+        return None
+    return _clamp_read_max_chars(reread_target)
+
+
+def classify_truncated_evidence_issue(evidence_obj: Dict[str, Any], initial_max_chars: int) -> Optional[str]:
+    if not isinstance(evidence_obj, dict):
+        return "Evidence payload is missing."
+    if not bool(evidence_obj.get("truncated")):
+        return None
+    chars_full = _as_int(evidence_obj.get("chars_full"), 0)
+    chars_returned = _as_int(evidence_obj.get("chars_returned"), 0)
+    if chars_full <= chars_returned:
+        return (
+            "Anomalous evidence metadata: truncated=true but chars_full <= chars_returned "
+            f"({chars_full} <= {chars_returned})."
+        )
+    if chars_full <= initial_max_chars:
+        return (
+            "Anomalous evidence metadata: truncated=true but chars_full <= requested max_chars "
+            f"({chars_full} <= {initial_max_chars})."
+        )
+    if initial_max_chars >= READ_TEXT_FILE_HARD_CAP:
+        return (
+            "Evidence remains truncated at the hard cap "
+            f"({READ_TEXT_FILE_HARD_CAP} chars)."
+        )
+    return None
 
 
 def get_default_model_for_logs(cfg: Dict[str, Any]) -> str:
@@ -285,16 +438,6 @@ def evidence_required_by_question(question: str) -> bool:
 def requires_nonempty_file_content(question: str) -> bool:
     q = question.lower()
     return bool(re.search(r"\bsummar(?:ize|ise|y)\b|\bsummary\b", q))
-
-
-def question_requires_full_evidence(question: str, cfg: Dict[str, Any]) -> bool:
-    raw_triggers = cfg.get("full_evidence_triggers")
-    if isinstance(raw_triggers, list):
-        triggers = [str(x).strip().lower() for x in raw_triggers if str(x).strip()]
-    else:
-        triggers = [str(x).lower() for x in DEFAULT_CONFIG["full_evidence_triggers"]]
-    q = question.lower()
-    return any(t in q for t in triggers)
 
 
 def build_scope_footer_from_evidence(evidence: Optional[Dict[str, Any]]) -> Optional[str]:
@@ -525,8 +668,19 @@ def build_answer_system_prompt(
     )
 
 
-def run_chat(cfg: Dict[str, Any], prompt: str) -> int:
-    run_dir = make_run_dir()
+def run_chat(
+    cfg: Dict[str, Any],
+    prompt: str,
+    resolved_config_path: Optional[Path] = None,
+    roots: Optional[Dict[str, Optional[Path]]] = None,
+) -> int:
+    runtime_roots = roots or resolve_runtime_roots(
+        resolved_config_path=resolved_config_path,
+        cfg=cfg,
+        cli_workroot=None,
+    )
+    security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
+    run_dir = make_run_dir(security_root=security_root)
     run_id = run_dir.name
     started = now_unix()
     record: Dict[str, Any] = {
@@ -534,8 +688,10 @@ def run_chat(cfg: Dict[str, Any], prompt: str) -> int:
         "mode": "chat",
         "prompt": prompt,
         "model": cfg["model"],
+        "resolved_config_path": _path_to_str(resolved_config_path),
         "started_unix": started,
     }
+    record.update(root_log_fields(runtime_roots))
 
     try:
         ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
@@ -575,8 +731,17 @@ def run_ask_one_tool(
     force_big_second: bool = False,
     force_fast: bool = False,
     force_full: bool = False,
+    resolved_config_path: Optional[Path] = None,
+    roots: Optional[Dict[str, Optional[Path]]] = None,
 ) -> int:
-    run_dir = make_run_dir()
+    _ = force_full  # Deprecated no-op; full evidence is now the default strategy.
+    runtime_roots = roots or resolve_runtime_roots(
+        resolved_config_path=resolved_config_path,
+        cfg=cfg,
+        cli_workroot=None,
+    )
+    security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
+    run_dir = make_run_dir(security_root=security_root)
     run_id = run_dir.name
     started = now_unix()
     first_model, second_model = select_models(
@@ -592,6 +757,7 @@ def run_ask_one_tool(
         "model": get_default_model_for_logs(cfg),
         "raw_first_model": first_model,
         "raw_second_model": second_model,
+        "resolved_config_path": _path_to_str(resolved_config_path),
         "started_unix": started,
         "tool_trace": [],
         "evidence_required": evidence_required_by_question(question),
@@ -600,6 +766,7 @@ def run_ask_one_tool(
         "evidence_chars_full": None,
         "evidence_chars_returned": None,
     }
+    record.update(root_log_fields(runtime_roots))
 
     try:
         ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
@@ -634,9 +801,10 @@ def run_ask_one_tool(
             if tool is None:
                 tool_result: Dict[str, Any] = {"error": f"Tool not found: {tool_call.name}"}
             else:
-                # Keep tool payload bounded unless the model explicitly requested otherwise.
-                if tool_call.name == "read_text_file" and "max_chars" not in tool_call.args:
-                    tool_call.args["max_chars"] = 12000
+                if tool_call.name == "read_text_file":
+                    # Full evidence by default: always request up to configured ceiling.
+                    full_read_chars = compute_initial_read_max_chars(cfg)
+                    tool_call.args["max_chars"] = full_read_chars
                     active_tool_args = dict(tool_call.args)
                 try:
                     tool_result = tool.func(active_tool_args)
@@ -654,7 +822,6 @@ def run_ask_one_tool(
             record["tool_trace"].append(trace_item)
 
             active_tool_result = tool_result
-            full_evidence_needed = force_full or question_requires_full_evidence(question, cfg)
             require_nonempty = requires_nonempty_file_content(question)
             if tool_call.name == "read_text_file":
                 evidence_obj, error_code, error_message, evidence_status = validate_read_text_file_evidence(
@@ -693,21 +860,15 @@ def run_ask_one_tool(
                 record["evidence_chars_full"] = evidence_obj.get("chars_full")
                 record["evidence_chars_returned"] = evidence_obj.get("chars_returned")
 
-                should_auto_reread = bool(evidence_obj.get("truncated")) and (
-                    force_full or (_as_bool(cfg.get("read_full_on_thorough"), True) and full_evidence_needed)
+                initial_read_max_chars = _as_int(
+                    active_tool_args.get("max_chars"),
+                    compute_initial_read_max_chars(cfg),
                 )
-                if should_auto_reread and tool is not None:
-                    configured_full_chars = _as_int(
-                        cfg.get("max_chars_full_read"),
-                        int(DEFAULT_CONFIG["max_chars_full_read"]),
-                    )
-                    chars_full = _as_int(evidence_obj.get("chars_full"), 0)
-                    reread_target = chars_full if chars_full > 0 else configured_full_chars
-                    if configured_full_chars > 0:
-                        reread_target = min(reread_target, configured_full_chars)
+                reread_target = compute_reread_max_chars(evidence_obj, initial_read_max_chars)
+                if reread_target is not None and tool is not None:
                     reread_args = {
-                        "path": evidence_obj.get("path"),
-                        "max_chars": _clamp_read_max_chars(reread_target),
+                        "path": select_reread_path(active_tool_args, evidence_obj),
+                        "max_chars": reread_target,
                     }
                     active_tool_args = reread_args
                     try:
@@ -750,12 +911,18 @@ def run_ask_one_tool(
                         record["evidence_chars_full"] = evidence_obj.get("chars_full")
                         record["evidence_chars_returned"] = evidence_obj.get("chars_returned")
 
-                if full_evidence_needed and evidence_obj is not None and bool(evidence_obj.get("truncated")):
+                if evidence_obj is not None and bool(evidence_obj.get("truncated")):
                     error_code = "EVIDENCE_TRUNCATED"
+                    chars_full = _as_int(evidence_obj.get("chars_full"), 0)
+                    chars_returned = _as_int(evidence_obj.get("chars_returned"), 0)
+                    issue = classify_truncated_evidence_issue(evidence_obj, initial_read_max_chars)
                     error_message = (
-                        "File read evidence is truncated for a request requiring full coverage. "
-                        "Re-run with --full or increase max_chars."
+                        "File read evidence remains truncated after full-evidence acquisition "
+                        f"({chars_returned}/{chars_full}). "
+                        "Increase max_chars_full_read in config if needed."
                     )
+                    if issue:
+                        error_message = f"{error_message} {issue}"
                     record["evidence_status"] = "invalid"
                     record["ok"] = False
                     record["error_code"] = error_code
@@ -936,6 +1103,12 @@ def run_ask_one_tool(
 
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agent")
+    parser.add_argument(
+        "--workroot",
+        type=str,
+        default=None,
+        help=f"Data root for runs/corpus/scratch (or set {WORKROOT_ENV_VAR}).",
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_chat = sub.add_parser("chat", help="Send a single prompt.")
@@ -946,20 +1119,41 @@ def main() -> int:
     ask_speed_group = p_ask.add_mutually_exclusive_group()
     ask_speed_group.add_argument("--big", action="store_true", help="Force big model for the second ask call.")
     ask_speed_group.add_argument("--fast", action="store_true", help="Force fast model for both ask calls.")
-    p_ask.add_argument("--full", action="store_true", help="Force a full file read when read_text_file is used.")
+    p_ask.add_argument("--full", action="store_true", help="Deprecated no-op (full evidence is default).")
 
     args = parser.parse_args()
-    cfg = {**DEFAULT_CONFIG, **load_config()}
+    loaded_cfg_path: Optional[Path] = None
+    cfg = dict(DEFAULT_CONFIG)
+    roots = resolve_runtime_roots(
+        resolved_config_path=loaded_cfg_path,
+        cfg=cfg,
+        cli_workroot=getattr(args, "workroot", None),
+    )
     try:
-        configure_tool_security(cfg.get("security", {}), workspace_root=Path.cwd())
+        loaded_cfg, loaded_cfg_path = load_config_with_path()
+        cfg = {**DEFAULT_CONFIG, **loaded_cfg}
+        roots = resolve_runtime_roots(
+            resolved_config_path=loaded_cfg_path,
+            cfg=cfg,
+            cli_workroot=getattr(args, "workroot", None),
+        )
+        security_root = roots.get("security_root") or Path.cwd().resolve()
+        configure_tool_security(
+            cfg.get("security", {}),
+            workspace_root=security_root,
+            resolved_config_path=loaded_cfg_path,
+        )
     except Exception as exc:
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "error_code": "CONFIG_ERROR",
+            "error_message": str(exc),
+            "resolved_config_path": _path_to_str(loaded_cfg_path),
+        }
+        payload.update(root_log_fields(roots))
         print(
             json.dumps(
-                {
-                    "ok": False,
-                    "error_code": "CONFIG_ERROR",
-                    "error_message": str(exc),
-                },
+                payload,
                 ensure_ascii=False,
             ),
             file=sys.stderr,
@@ -967,7 +1161,12 @@ def main() -> int:
         return 1
 
     if args.cmd == "chat":
-        return run_chat(cfg, args.prompt)
+        return run_chat(
+            cfg,
+            args.prompt,
+            resolved_config_path=loaded_cfg_path,
+            roots=roots,
+        )
     if args.cmd == "ask":
         return run_ask_one_tool(
             cfg,
@@ -975,6 +1174,8 @@ def main() -> int:
             force_big_second=bool(getattr(args, "big", False)),
             force_fast=bool(getattr(args, "fast", False)),
             force_full=bool(getattr(args, "full", False)),
+            resolved_config_path=loaded_cfg_path,
+            roots=roots,
         )
     parser.print_help()
     return 2

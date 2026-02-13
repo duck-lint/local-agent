@@ -1,7 +1,10 @@
 .venv/
 .tmp
 __py*/
-runs/
-corpus/
-scratch/
+allowed/
 secret*
+repo_marker.py
+*.egg*
+.DS_Store
+Thumbs.db
+"@
