@@ -65,6 +65,24 @@ class ReadTextFileSecurityTests(unittest.TestCase):
         self.assertEqual(result["path"], str(p.resolve()))
         self.assertEqual(result["text"], "nested ok")
 
+    def test_explicit_subpath_is_workspace_root_relative_not_cwd(self) -> None:
+        self._configure()
+        p = self.allowed_root / "corpus" / "a" / "b.md"
+        p.parent.mkdir(parents=True, exist_ok=True)
+        p.write_text("workspace anchored", encoding="utf-8")
+        outside = self.tmp_path / "outside"
+        outside.mkdir(parents=True, exist_ok=True)
+        old_cwd = os.getcwd()
+
+        os.chdir(outside)
+        try:
+            result = _read_text_file({"path": "corpus/a/b.md"})
+        finally:
+            os.chdir(old_cwd)
+
+        self.assertEqual(result["path"], str(p.resolve()))
+        self.assertEqual(result["text"], "workspace anchored")
+
     def test_ambiguous_filename_denied(self) -> None:
         self._configure()
         p1 = self.allowed_root / "corpus" / "dupe.md"

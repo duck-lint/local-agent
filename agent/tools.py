@@ -45,6 +45,7 @@ _READ_TEXT_FILE_POLICY = ReadTextFilePolicy(
     deny_hidden_paths=True,
     allow_any_path=False,
 )
+_WORKSPACE_ROOT = Path.cwd().resolve()
 
 
 def _normalize_ext(ext: str) -> str:
@@ -85,10 +86,11 @@ def _validate_existing_file(path: Path) -> Path:
 
 
 def configure_tool_security(policy_dict: dict, workspace_root: Path) -> None:
-    global _READ_TEXT_FILE_POLICY
+    global _READ_TEXT_FILE_POLICY, _WORKSPACE_ROOT
 
     raw = policy_dict if isinstance(policy_dict, dict) else {}
     workspace = workspace_root.resolve()
+    _WORKSPACE_ROOT = workspace
     auto_create_allowed_roots = bool(raw.get("auto_create_allowed_roots", False))
     roots_must_be_within_workspace = bool(raw.get("roots_must_be_within_workspace", False))
 
@@ -160,7 +162,10 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
         # Explicit subpath mode: interpret request as workspace-relative path and
         # validate it is contained in at least one allowlisted root.
         try:
-            candidate_abs = Path(os.path.abspath(str(requested_path)))
+            if requested_path.is_absolute() or _has_windows_anchor(requested_text):
+                candidate_abs = Path(os.path.abspath(str(requested_path)))
+            else:
+                candidate_abs = Path(os.path.abspath(str(_WORKSPACE_ROOT / requested_path)))
         except OSError as exc:
             raise ToolError("PATH_DENIED", f"Invalid path: {requested}") from exc
 
