@@ -347,148 +347,157 @@ def collect_doctor_checks(
         max_chars=expected_max_chars,
         overlap=expected_overlap,
     )
-    try:
-        init_db(db_path)
-        with connect_db(db_path) as conn:
-            row = conn.execute("PRAGMA user_version").fetchone()
-            version = int(row[0]) if row is not None else 0
-            chunks_total_row = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()
-            chunks_total = int(chunks_total_row["c"]) if chunks_total_row is not None else 0
-            missing_key_row = conn.execute(
-                "SELECT COUNT(*) AS c FROM chunks WHERE chunk_key IS NULL OR trim(chunk_key) = ''"
-            ).fetchone()
-            missing_chunk_keys = int(missing_key_row["c"]) if missing_key_row is not None else 0
-            scheme_rows = conn.execute("SELECT DISTINCT scheme FROM chunks").fetchall()
-            schemes = sorted(str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None)
-            stored_chunker_sig = get_meta(conn, "chunker_sig")
-
-        if version != 3:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_INDEX_SCHEMA_VERSION",
-                    message=f"Index schema version is {version}; expected 3.",
-                    suggested_fix=f"Run: python -m agent index --rebuild --json --db-path \"{db_path}\"",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_INDEX_SCHEMA_OK",
-                    message=f"Index schema version is {version} ({db_path}).",
-                )
-            )
-
-        if chunks_total == 0:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_INDEX_EMPTY",
-                    message=f"Index contains no chunks at {db_path}.",
-                    suggested_fix="Run: python -m agent index --rebuild --json",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_INDEX_NONEMPTY",
-                    message=f"Index contains chunks={chunks_total}.",
-                )
-            )
-
-        if chunks_total > 0 and missing_chunk_keys > 0:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_CHUNK_KEY_MISSING",
-                    message=f"{missing_chunk_keys} chunks are missing chunk_key.",
-                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_CHUNK_KEY_OK",
-                    message="All indexed chunks have non-empty chunk_key.",
-                )
-            )
-
-        mismatched = [s for s in schemes if s != expected_scheme]
-        if chunks_total > 0 and mismatched:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_CHUNK_SCHEME_MISMATCH",
-                    message=(
-                        f"Chunk schemes {schemes} do not match configured scheme={expected_scheme}."
-                    ),
-                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_CHUNK_SCHEME_OK",
-                    message=f"Chunk schemes match configured scheme={expected_scheme}.",
-                )
-            )
-
-        if chunks_total > 0 and not stored_chunker_sig:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_CHUNKER_SIG_MISSING",
-                    message="Index meta.chunker_sig is missing while chunks exist.",
-                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_CHUNKER_SIG_OK",
-                    message="Index meta.chunker_sig is present.",
-                )
-            )
-
-        if (
-            chunks_total > 0
-            and isinstance(stored_chunker_sig, str)
-            and stored_chunker_sig
-            and stored_chunker_sig != expected_chunker_sig
-        ):
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_CHUNKER_SIG_MISMATCH",
-                    message=(
-                        "Index meta.chunker_sig does not match configured chunking "
-                        f"(stored={stored_chunker_sig}, expected={expected_chunker_sig})."
-                    ),
-                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
-                )
-            )
-        else:
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_CHUNKER_SIG_MATCH",
-                    message="Index meta.chunker_sig matches configured chunking.",
-                )
-            )
-    except Exception as exc:
+    if not db_path.exists():
         checks.append(
             DoctorCheckResult(
                 ok=False,
-                error_code="DOCTOR_INDEX_DB_ERROR",
-                message=f"Index DB check failed at {db_path}: {exc}",
+                error_code="DOCTOR_INDEX_DB_MISSING",
+                message=f"Index DB does not exist at {db_path}.",
                 suggested_fix="Run: python -m agent index --rebuild --json",
             )
         )
+    else:
+        try:
+            with connect_db(db_path) as conn:
+                row = conn.execute("PRAGMA user_version").fetchone()
+                version = int(row[0]) if row is not None else 0
+                chunks_total_row = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()
+                chunks_total = int(chunks_total_row["c"]) if chunks_total_row is not None else 0
+                missing_key_row = conn.execute(
+                    "SELECT COUNT(*) AS c FROM chunks WHERE chunk_key IS NULL OR trim(chunk_key) = ''"
+                ).fetchone()
+                missing_chunk_keys = int(missing_key_row["c"]) if missing_key_row is not None else 0
+                scheme_rows = conn.execute("SELECT DISTINCT scheme FROM chunks").fetchall()
+                schemes = sorted(str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None)
+                stored_chunker_sig = get_meta(conn, "chunker_sig")
+
+            if version != 3:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_INDEX_SCHEMA_VERSION",
+                        message=f"Index schema version is {version}; expected 3.",
+                        suggested_fix=f"Run: python -m agent index --rebuild --json --db-path \"{db_path}\"",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_INDEX_SCHEMA_OK",
+                        message=f"Index schema version is {version} ({db_path}).",
+                    )
+                )
+
+            if chunks_total == 0:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_INDEX_EMPTY",
+                        message=f"Index contains no chunks at {db_path}.",
+                        suggested_fix="Run: python -m agent index --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_INDEX_NONEMPTY",
+                        message=f"Index contains chunks={chunks_total}.",
+                    )
+                )
+
+            if chunks_total > 0 and missing_chunk_keys > 0:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_CHUNK_KEY_MISSING",
+                        message=f"{missing_chunk_keys} chunks are missing chunk_key.",
+                        suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_CHUNK_KEY_OK",
+                        message="All indexed chunks have non-empty chunk_key.",
+                    )
+                )
+
+            mismatched = [s for s in schemes if s != expected_scheme]
+            if chunks_total > 0 and mismatched:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_CHUNK_SCHEME_MISMATCH",
+                        message=(
+                            f"Chunk schemes {schemes} do not match configured scheme={expected_scheme}."
+                        ),
+                        suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_CHUNK_SCHEME_OK",
+                        message=f"Chunk schemes match configured scheme={expected_scheme}.",
+                    )
+                )
+
+            if chunks_total > 0 and not stored_chunker_sig:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_CHUNKER_SIG_MISSING",
+                        message="Index meta.chunker_sig is missing while chunks exist.",
+                        suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_CHUNKER_SIG_OK",
+                        message="Index meta.chunker_sig is present.",
+                    )
+                )
+
+            if (
+                chunks_total > 0
+                and isinstance(stored_chunker_sig, str)
+                and stored_chunker_sig
+                and stored_chunker_sig != expected_chunker_sig
+            ):
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_CHUNKER_SIG_MISMATCH",
+                        message=(
+                            "Index meta.chunker_sig does not match configured chunking "
+                            f"(stored={stored_chunker_sig}, expected={expected_chunker_sig})."
+                        ),
+                        suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_CHUNKER_SIG_MATCH",
+                        message="Index meta.chunker_sig matches configured chunking.",
+                    )
+                )
+        except Exception as exc:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_INDEX_DB_ERROR",
+                    message=f"Index DB check failed at {db_path}: {exc}",
+                    suggested_fix="Run: python -m agent index --rebuild --json",
+                )
+            )
 
     # Ollama reachability check
     if check_ollama:
