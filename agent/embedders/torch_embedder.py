@@ -6,6 +6,10 @@ from pathlib import Path
 from typing import Optional
 
 from agent.embedder import Embedder
+from agent.embed_runtime_fingerprint import (
+    build_torch_runtime_fingerprint,
+    compute_model_files_fingerprint,
+)
 
 
 class TorchEmbedder(Embedder):
@@ -36,6 +40,7 @@ class TorchEmbedder(Embedder):
         self.offline_only = bool(offline_only)
         self._embed_dim = 0
         self._runtime_fp = ""
+        self._local_model_path = ""
 
         if self.pooling != "mean":
             raise ValueError(f"phase3.embed.torch.pooling must be 'mean', got={self.pooling}")
@@ -43,6 +48,7 @@ class TorchEmbedder(Embedder):
             raise ValueError("phase3.embed.torch.normalize must be true for phase3 invariants")
 
         model_source = self._resolve_model_source(local_model_path)
+        model_root = self._resolve_model_root(local_model_path)
         cache_dir_value = str(cache_dir).strip()
         cache_folder = str(Path(cache_dir_value).expanduser().resolve()) if cache_dir_value else None
 
@@ -54,10 +60,25 @@ class TorchEmbedder(Embedder):
             import torch  # type: ignore
         except Exception as exc:  # pragma: no cover - import errors are environment specific
             raise RuntimeError("Torch provider requires optional dependency 'torch'") from exc
+        torch_version = str(getattr(torch, "__version__", "unknown"))
         try:
             from sentence_transformers import SentenceTransformer  # type: ignore
         except Exception as exc:  # pragma: no cover - import errors are environment specific
             raise RuntimeError("Torch provider requires optional dependency 'sentence-transformers'") from exc
+        sentence_transformers_version = "unknown"
+        try:
+            import sentence_transformers as _st_pkg  # type: ignore
+
+            sentence_transformers_version = str(getattr(_st_pkg, "__version__", "unknown"))
+        except Exception:
+            sentence_transformers_version = "unknown"
+        transformers_version = "unknown"
+        try:
+            import transformers as _transformers_pkg  # type: ignore
+
+            transformers_version = str(getattr(_transformers_pkg, "__version__", "unknown"))
+        except Exception:
+            transformers_version = "unknown"
 
         resolved_device = self._resolve_device(torch, device)
         target_dtype = self._resolve_dtype(resolved_device, dtype)
@@ -100,16 +121,19 @@ class TorchEmbedder(Embedder):
         self._model = model
         self._device = resolved_device
         self._dtype = target_dtype
-        self._runtime_fp = (
-            "provider=torch"
-            f";model_id={self.model_id}"
-            f";source={model_source}"
-            f";device={self._device}"
-            f";dtype={self._dtype}"
-            f";max_length={self.max_length}"
-            f";pooling={self.pooling}"
-            f";normalize={int(self.normalize)}"
-            f";offline_only={int(self.offline_only)}"
+        self._local_model_path = str(model_root) if model_root is not None else ""
+        model_files_fingerprint = compute_model_files_fingerprint(model_root)
+        self._runtime_fp = build_torch_runtime_fingerprint(
+            model_id=self.model_id,
+            local_model_path=self._local_model_path,
+            model_files_fingerprint=model_files_fingerprint,
+            torch_version=torch_version,
+            transformers_version=transformers_version,
+            sentence_transformers_version=sentence_transformers_version,
+            pooling=self.pooling,
+            max_length=self.max_length,
+            dtype=self._dtype,
+            normalize=self.normalize,
         )
 
     @property
@@ -148,6 +172,13 @@ class TorchEmbedder(Embedder):
                 "Provide phase3.embed.torch.local_model_path or pre-download into cache_dir."
             )
         return str(p.resolve())
+
+    def _resolve_model_root(self, local_model_path: str) -> Optional[Path]:
+        path_text = str(local_model_path).strip()
+        if not path_text:
+            return None
+        p = Path(path_text).expanduser().resolve()
+        return p if p.exists() and p.is_dir() else None
 
     def _resolve_device(self, torch_module: object, configured: str) -> str:
         want = str(configured).strip().lower() or "auto"

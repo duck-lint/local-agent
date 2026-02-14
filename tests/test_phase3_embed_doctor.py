@@ -8,6 +8,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.__main__ import collect_doctor_checks
+from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
@@ -19,8 +20,9 @@ from agent.tools import configure_tool_security
 
 
 class _DummyEmbedder:
-    def __init__(self, dim: int = 6) -> None:
+    def __init__(self, dim: int = 6, runtime_fp: str = "dummy-runtime-v1") -> None:
         self.dim = dim
+        self._runtime_fp = runtime_fp
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -30,10 +32,21 @@ class _DummyEmbedder:
             out.append(vec)
         return out
 
+    @property
+    def embed_dim(self) -> int:
+        return self.dim
+
+    def runtime_fingerprint(self) -> str:
+        return self._runtime_fp
+
 
 def _dummy_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
-    _ = provider, model_id, base_url, timeout_s
-    return _DummyEmbedder()
+    _ = timeout_s
+    if provider == "ollama":
+        runtime_fp = build_ollama_runtime_fingerprint(base_url=base_url, model_id=model_id)
+    else:
+        runtime_fp = f"{provider}:{model_id}"
+    return _DummyEmbedder(runtime_fp=runtime_fp)
 
 
 class Phase3EmbedDoctorTests(unittest.TestCase):
@@ -234,6 +247,7 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
             phase2_db_path=self.db_path,
             phase3_cfg=changed_phase3_cfg,
             embedder_factory=_dummy_factory,
+            rebuild=True,
         )
 
         failed_codes, summary = self._doctor(changed_cfg, require_phase3=True)
@@ -278,6 +292,47 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         failed_codes, _ = self._doctor(copy.deepcopy(self.cfg), require_phase3=False)
         self.assertIn("DOCTOR_EMBED_META_MISSING", failed_codes)
 
+    def test_doctor_detects_runtime_fingerprint_mismatch(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        embeddings_db = self.workroot / "embeddings" / "db" / "embeddings.sqlite"
+        with connect_embeddings_db(embeddings_db) as conn:
+            conn.execute("UPDATE meta SET value = 'deadbeef' WHERE key = 'embed_runtime_fingerprint'")
+            conn.commit()
+        failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=False)
+        self.assertIn("DOCTOR_EMBED_RUNTIME_FINGERPRINT_MISMATCH", failed_codes)
+        self.assertFalse(bool(summary.get("embed_runtime_fingerprint_match")))
+
+    def test_embed_fails_closed_on_runtime_fingerprint_mismatch_without_rebuild(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        embeddings_db = self.workroot / "embeddings" / "db" / "embeddings.sqlite"
+        with connect_embeddings_db(embeddings_db) as conn:
+            conn.execute("UPDATE meta SET value = 'deadbeef' WHERE key = 'embed_runtime_fingerprint'")
+            conn.commit()
+        with self.assertRaises(RuntimeError) as ctx:
+            run_embed_phase(
+                cfg=self.cfg,
+                security_root=self.workroot,
+                phase2_db_path=self.db_path,
+                phase3_cfg=phase3_cfg,
+                embedder_factory=_dummy_factory,
+                rebuild=False,
+            )
+        self.assertIn("--rebuild", str(ctx.exception))
+
     def test_doctor_retrieval_smoke_skip_when_no_ollama(self) -> None:
         phase3_cfg = build_phase3_cfg(self.cfg)
         run_embed_phase(
@@ -292,6 +347,84 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         self.assertFalse(bool(summary.get("retrieval_smoke_ok")))
         self.assertEqual(str(summary.get("retrieval_smoke_reason")), "skipped_no_ollama")
 
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    def test_doctor_torch_smoke_runs_with_no_ollama(
+        self,
+        mock_retrieve,
+        mock_create_embedder,
+    ) -> None:
+        torch_cfg = copy.deepcopy(self.cfg)
+        torch_cfg["phase3"]["embed"]["provider"] = "torch"
+        torch_cfg["phase3"]["embed"]["model_id"] = "sentence-transformers/all-MiniLM-L6-v2"
+        torch_cfg["phase3"]["embed"]["torch"] = {
+            "local_model_path": "",
+            "cache_dir": "",
+            "device": "auto",
+            "dtype": "float32",
+            "batch_size": 16,
+            "max_length": 128,
+            "pooling": "mean",
+            "normalize": True,
+            "trust_remote_code": False,
+            "offline_only": True,
+        }
+        phase3_cfg = build_phase3_cfg(torch_cfg)
+        run_embed_phase(
+            cfg=torch_cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        with connect_db(self.db_path) as conn:
+            row = conn.execute("SELECT chunk_key FROM chunks ORDER BY chunk_key LIMIT 1").fetchone()
+            self.assertIsNotNone(row)
+            chunk_key = str(row["chunk_key"])
+
+        dummy = _DummyEmbedder(runtime_fp="torch:sentence-transformers/all-MiniLM-L6-v2")
+        mock_create_embedder.return_value = dummy
+        mock_retrieve.return_value = RetrievalResult(
+            query="test",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="cp",
+            query_preprocess_sig="qp",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=10,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=chunk_key,
+                    rel_path="a.md",
+                    heading_path="",
+                    text="alpha",
+                    score=0.9,
+                    method="vector",
+                    lexical_score=0.0,
+                    vector_score=0.9,
+                )
+            ],
+        )
+
+        summary: dict = {}
+        checks = collect_doctor_checks(
+            torch_cfg,
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+            require_phase3=False,
+            phase3_summary_out=summary,
+        )
+        failure_codes = {check.error_code for check in checks if not check.ok}
+        self.assertNotIn("DOCTOR_PHASE3_RETRIEVAL_SMOKE_SKIPPED_NO_OLLAMA", {check.error_code for check in checks})
+        self.assertNotIn("DOCTOR_PHASE3_RETRIEVAL_NOT_READY", failure_codes)
+        self.assertTrue(bool(summary.get("retrieval_smoke_ran")))
+
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
     @patch("agent.__main__.retrieve")
@@ -301,8 +434,13 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         mock_create_embedder,
         mock_ensure_ollama_up,
     ) -> None:
-        _ = mock_create_embedder
         mock_ensure_ollama_up.return_value = None
+        mock_create_embedder.return_value = _DummyEmbedder(
+            runtime_fp=build_ollama_runtime_fingerprint(
+                base_url=self.cfg["ollama_base_url"],
+                model_id=self.cfg["phase3"]["embed"]["model_id"],
+            )
+        )
         phase3_cfg = build_phase3_cfg(self.cfg)
         run_embed_phase(
             cfg=self.cfg,
@@ -366,8 +504,13 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         mock_create_embedder,
         mock_ensure_ollama_up,
     ) -> None:
-        _ = mock_create_embedder
         mock_ensure_ollama_up.return_value = None
+        mock_create_embedder.return_value = _DummyEmbedder(
+            runtime_fp=build_ollama_runtime_fingerprint(
+                base_url=self.cfg["ollama_base_url"],
+                model_id=self.cfg["phase3"]["embed"]["model_id"],
+            )
+        )
         phase3_cfg = build_phase3_cfg(self.cfg)
         run_embed_phase(
             cfg=self.cfg,

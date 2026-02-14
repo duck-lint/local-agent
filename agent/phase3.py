@@ -75,7 +75,9 @@ class EmbedSummary:
     skipped_ok: int
     errors: list[str]
     dim: Optional[int]
+    provider: str
     model_id: str
+    embed_runtime_fingerprint: str
     chunk_preprocess_sig: str
     query_preprocess_sig: str
     vectors_normalized: bool
@@ -379,7 +381,9 @@ def run_embed_phase(
             skipped_ok=0,
             errors=[],
             dim=None,
+            provider=provider,
             model_id=model_id,
+            embed_runtime_fingerprint="",
             chunk_preprocess_sig=chunk_preprocess_sig,
             query_preprocess_sig=query_preprocess_sig,
             vectors_normalized=True,
@@ -394,6 +398,7 @@ def run_embed_phase(
             return create_embedder(provider=p, model_id=m, base_url=b, timeout_s=t, phase3_cfg=phase3_cfg)
         factory = _default_factory
     embedder = factory(provider, model_id, base_url, timeout_s)
+    runtime_fingerprint = str(getattr(embedder, "runtime_fingerprint", lambda: "")() or "")
 
     first = chunks[0]
     first_text = preprocess_chunk_text(
@@ -413,6 +418,19 @@ def run_embed_phase(
     with connect_embeddings_db(embeddings_db_path) as embed_conn:
         existing_rows = fetch_embeddings_map(embed_conn, [chunk["chunk_key"] for chunk in chunks])
         existing_embeddings = len(existing_rows)
+        stored_provider = get_embeddings_meta(embed_conn, "embed_provider")
+        stored_runtime = get_embeddings_meta(embed_conn, "embed_runtime_fingerprint")
+        if existing_embeddings > 0 and not rebuild:
+            if stored_provider and stored_provider != provider:
+                raise RuntimeError(
+                    "Embedding provider changed; run `local-agent embed --rebuild` to refresh embeddings "
+                    f"(stored={stored_provider}, current={provider})."
+                )
+            if stored_runtime and runtime_fingerprint and stored_runtime != runtime_fingerprint:
+                raise RuntimeError(
+                    "Embedding runtime changed; run `local-agent embed --rebuild` to refresh embeddings "
+                    "(embed_runtime_fingerprint mismatch)."
+                )
 
     to_process, missing, outdated, skipped_ok = summarize_embedding_drift(
         chunks=chunks,
@@ -433,7 +451,9 @@ def run_embed_phase(
             skipped_ok=skipped_ok,
             errors=[],
             dim=dim,
+            provider=provider,
             model_id=model_id,
+            embed_runtime_fingerprint=runtime_fingerprint,
             chunk_preprocess_sig=chunk_preprocess_sig,
             query_preprocess_sig=query_preprocess_sig,
             vectors_normalized=True,
@@ -500,8 +520,10 @@ def run_embed_phase(
                 written += 1
 
         set_embeddings_meta(embed_conn, "schema_version", "1")
+        set_embeddings_meta(embed_conn, "embed_provider", provider)
         set_embeddings_meta(embed_conn, "embed_model_id", model_id)
         set_embeddings_meta(embed_conn, "embed_dim", str(dim))
+        set_embeddings_meta(embed_conn, "embed_runtime_fingerprint", runtime_fingerprint)
         set_embeddings_meta(embed_conn, "chunk_preprocess_sig", chunk_preprocess_sig)
         set_embeddings_meta(embed_conn, "query_preprocess_sig", query_preprocess_sig)
         set_embeddings_meta(embed_conn, "vectors_normalized", "1")
@@ -540,7 +562,9 @@ def run_embed_phase(
         skipped_ok=skipped_ok,
         errors=errors,
         dim=dim,
+        provider=provider,
         model_id=model_id,
+        embed_runtime_fingerprint=runtime_fingerprint,
         chunk_preprocess_sig=chunk_preprocess_sig,
         query_preprocess_sig=query_preprocess_sig,
         vectors_normalized=True,
@@ -551,8 +575,10 @@ def run_embed_phase(
 def read_embeddings_meta_summary(embeddings_db_path: Path) -> dict[str, Optional[str]]:
     if not embeddings_db_path.exists():
         return {
+            "embed_provider": None,
             "embed_model_id": None,
             "embed_dim": None,
+            "embed_runtime_fingerprint": None,
             "chunk_preprocess_sig": None,
             "query_preprocess_sig": None,
             "vectors_normalized": None,
@@ -560,8 +586,10 @@ def read_embeddings_meta_summary(embeddings_db_path: Path) -> dict[str, Optional
         }
     with connect_embeddings_db(embeddings_db_path) as conn:
         return {
+            "embed_provider": get_embeddings_meta(conn, "embed_provider"),
             "embed_model_id": get_embeddings_meta(conn, "embed_model_id"),
             "embed_dim": get_embeddings_meta(conn, "embed_dim"),
+            "embed_runtime_fingerprint": get_embeddings_meta(conn, "embed_runtime_fingerprint"),
             "chunk_preprocess_sig": get_embeddings_meta(conn, "chunk_preprocess_sig"),
             "query_preprocess_sig": get_embeddings_meta(conn, "query_preprocess_sig"),
             "vectors_normalized": get_embeddings_meta(conn, "vectors_normalized"),

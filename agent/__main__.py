@@ -637,6 +637,8 @@ def collect_doctor_checks(
         "missing_embeddings": 0,
         "outdated_embeddings": 0,
         "dim_mismatch_embeddings": 0,
+        "embed_provider": "",
+        "embed_runtime_fingerprint_match": False,
         "embeddings_db_path": None,
         "memory_db_path": None,
         "memory_enabled": False,
@@ -653,10 +655,12 @@ def collect_doctor_checks(
     memory_enabled = phase3_memory_enabled(phase3_cfg)
     phase3_summary["memory_enabled"] = memory_enabled
 
+    provider = ""
     embed_model_id = ""
     preprocess_name = ""
     computed_chunk_preprocess_sig = ""
     computed_query_preprocess_sig = ""
+    computed_runtime_fingerprint = ""
     embed_config_valid = False
     embed_meta_ready = False
     embeddings_total = 0
@@ -717,17 +721,22 @@ def collect_doctor_checks(
 
                 meta_rows = embed_conn.execute("SELECT key, value FROM meta").fetchall()
                 meta_map = {str(r["key"]): str(r["value"]) for r in meta_rows}
+                stored_provider = meta_map.get("embed_provider")
                 stored_model = meta_map.get("embed_model_id")
+                stored_runtime_fingerprint = meta_map.get("embed_runtime_fingerprint")
                 stored_chunk_sig = meta_map.get("chunk_preprocess_sig")
                 stored_query_sig = meta_map.get("query_preprocess_sig")
                 stored_dim_raw = meta_map.get("embed_dim")
                 stored_vectors_normalized = meta_map.get("vectors_normalized")
                 schema_meta = meta_map.get("schema_version")
+                phase3_summary["embed_provider"] = stored_provider or provider
 
                 meta_ok = all(
                     [
                         schema_meta,
+                        stored_provider,
                         stored_model,
+                        stored_runtime_fingerprint,
                         stored_chunk_sig,
                         stored_query_sig,
                         stored_dim_raw,
@@ -740,8 +749,9 @@ def collect_doctor_checks(
                             ok=False,
                             error_code="DOCTOR_EMBED_META_MISSING",
                             message=(
-                                "Embeddings meta is incomplete (need schema_version, embed_model_id, embed_dim, "
-                                "chunk_preprocess_sig, query_preprocess_sig, vectors_normalized)."
+                                "Embeddings meta is incomplete (need schema_version, embed_provider, embed_model_id, "
+                                "embed_dim, embed_runtime_fingerprint, chunk_preprocess_sig, query_preprocess_sig, "
+                                "vectors_normalized)."
                             ),
                             suggested_fix="Run: python -m agent embed --rebuild --json",
                         )
@@ -752,6 +762,30 @@ def collect_doctor_checks(
                     stored_dim = int(stored_dim_raw) if stored_dim_raw is not None else None
                 except ValueError:
                     stored_dim = None
+
+                if embed_config_valid and stored_provider and stored_provider != provider:
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_PROVIDER_MISMATCH",
+                            message=(
+                                f"Embeddings provider mismatch (stored={stored_provider}, configured={provider})."
+                            ),
+                            suggested_fix="Run: python -m agent embed --rebuild --json",
+                        )
+                    )
+                    meta_ok = False
+
+                if embed_config_valid and stored_model and stored_model != embed_model_id:
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_MODEL_MISMATCH",
+                            message=f"Embeddings model mismatch (stored={stored_model}, configured={embed_model_id}).",
+                            suggested_fix="Run: python -m agent embed --rebuild --json",
+                        )
+                    )
+                    meta_ok = False
 
                 if (
                     embed_config_valid
@@ -789,12 +823,12 @@ def collect_doctor_checks(
                     )
                     meta_ok = False
 
-                if stored_vectors_normalized not in {"0", "1"}:
+                if stored_vectors_normalized != "1":
                     checks.append(
                         DoctorCheckResult(
                             ok=False,
                             error_code="DOCTOR_EMBED_VECTORS_NORMALIZED_INVALID",
-                            message=f"Embeddings meta vectors_normalized must be '0' or '1', got={stored_vectors_normalized}.",
+                            message=f"Embeddings meta vectors_normalized must be '1', got={stored_vectors_normalized}.",
                             suggested_fix="Run: python -m agent embed --rebuild --json",
                         )
                     )
@@ -803,6 +837,48 @@ def collect_doctor_checks(
                 embeddings_total_row = embed_conn.execute("SELECT COUNT(*) AS c FROM embeddings").fetchone()
                 embeddings_total = int(embeddings_total_row["c"]) if embeddings_total_row is not None else 0
                 phase3_summary["embeddings_total"] = embeddings_total
+                if embed_config_valid and embeddings_total > 0:
+                    try:
+                        runtime_embedder = create_embedder(
+                            provider=provider,
+                            model_id=embed_model_id,
+                            base_url=cfg["ollama_base_url"],
+                            timeout_s=cfg["timeout_s"],
+                            phase3_cfg=phase3_cfg,
+                        )
+                        computed_runtime_fingerprint = runtime_embedder.runtime_fingerprint()
+                    except Exception as exc:
+                        checks.append(
+                            DoctorCheckResult(
+                                ok=False,
+                                error_code="DOCTOR_EMBED_RUNTIME_FINGERPRINT_ERROR",
+                                message=f"Failed to compute current embedding runtime fingerprint: {exc}",
+                                suggested_fix="Ensure the configured embedding runtime is available locally.",
+                            )
+                        )
+                        meta_ok = False
+
+                if (
+                    embed_config_valid
+                    and stored_runtime_fingerprint
+                    and computed_runtime_fingerprint
+                    and stored_runtime_fingerprint != computed_runtime_fingerprint
+                ):
+                    phase3_summary["embed_runtime_fingerprint_match"] = False
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_RUNTIME_FINGERPRINT_MISMATCH",
+                            message=(
+                                "Embedding runtime changed; run `python -m agent embed --rebuild --json` to refresh "
+                                "embeddings."
+                            ),
+                            suggested_fix="Run: python -m agent embed --rebuild --json",
+                        )
+                    )
+                    meta_ok = False
+                elif stored_runtime_fingerprint and computed_runtime_fingerprint:
+                    phase3_summary["embed_runtime_fingerprint_match"] = True
 
                 chunk_keys = list(phase2_chunk_map.keys())
                 rows_by_key = fetch_embeddings_map(embed_conn, chunk_keys)
@@ -904,16 +980,17 @@ def collect_doctor_checks(
                 )
             )
 
-    if not check_ollama:
+    should_skip_smoke = provider == "ollama" and not check_ollama
+    if should_skip_smoke:
         phase3_summary["retrieval_smoke_reason"] = "skipped_no_ollama"
         checks.append(
             DoctorCheckResult(
                 ok=True,
                 error_code="DOCTOR_PHASE3_RETRIEVAL_SMOKE_SKIPPED_NO_OLLAMA",
-                message="Skipped retrieval readiness smoke test because --no-ollama was requested.",
+                message="Skipped retrieval readiness smoke test because --no-ollama was requested for ollama provider.",
             )
         )
-    elif not ollama_ready:
+    elif provider == "ollama" and check_ollama and not ollama_ready:
         phase3_summary["retrieval_smoke_reason"] = "ollama_unreachable"
     elif embeddings_total > 0 and embed_meta_ready:
         phase3_summary["retrieval_smoke_ran"] = True
@@ -2458,7 +2535,9 @@ def run_embed(
         payload = {
             "ok": len(summary.errors) == 0,
             "embeddings_db": summary.embeddings_db_path,
+            "provider": summary.provider,
             "model_id": summary.model_id,
+            "embed_runtime_fingerprint": summary.embed_runtime_fingerprint,
             "chunk_preprocess_sig": summary.chunk_preprocess_sig,
             "query_preprocess_sig": summary.query_preprocess_sig,
             "vectors_normalized": summary.vectors_normalized,
@@ -2480,7 +2559,9 @@ def run_embed(
         print_output(f"embeddings_db: {summary.embeddings_db_path}")
         print_output(
             "embed summary: "
+            f"provider={summary.provider}, "
             f"model_id={summary.model_id}, "
+            f"embed_runtime_fingerprint={summary.embed_runtime_fingerprint}, "
             f"dim={summary.dim}, "
             f"chunk_preprocess_sig={summary.chunk_preprocess_sig}, "
             f"query_preprocess_sig={summary.query_preprocess_sig}, "

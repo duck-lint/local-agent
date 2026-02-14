@@ -7,6 +7,7 @@ import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embedding_fingerprint import (
     compute_chunk_preprocess_sig,
     compute_embed_sig,
@@ -25,8 +26,9 @@ from agent.tools import configure_tool_security
 
 
 class _DummyEmbedder:
-    def __init__(self, dim: int = 8) -> None:
+    def __init__(self, dim: int = 8, runtime_fp: str = "dummy-runtime-v1") -> None:
         self.dim = dim
+        self._runtime_fp = runtime_fp
 
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
@@ -35,10 +37,21 @@ class _DummyEmbedder:
             out.append([float(digest[i]) / 255.0 for i in range(self.dim)])
         return out
 
+    @property
+    def embed_dim(self) -> int:
+        return self.dim
+
+    def runtime_fingerprint(self) -> str:
+        return self._runtime_fp
+
 
 def _dummy_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
-    _ = provider, model_id, base_url, timeout_s
-    return _DummyEmbedder()
+    _ = timeout_s
+    if provider == "ollama":
+        runtime_fp = build_ollama_runtime_fingerprint(base_url=base_url, model_id=model_id)
+    else:
+        runtime_fp = f"{provider}:{model_id}"
+    return _DummyEmbedder(runtime_fp=runtime_fp)
 
 
 class Phase3RetrievalTests(unittest.TestCase):

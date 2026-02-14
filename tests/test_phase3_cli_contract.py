@@ -8,12 +8,16 @@ from contextlib import redirect_stdout
 from pathlib import Path
 
 from agent.__main__ import run_doctor, run_embed, run_memory
+from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.indexer import SourceSpec, index_sources
 from agent.tools import configure_tool_security
 
 
 class _DummyEmbedder:
+    def __init__(self, runtime_fp: str = "dummy-runtime-v1") -> None:
+        self._runtime_fp = runtime_fp
+
     def embed_texts(self, texts: list[str]) -> list[list[float]]:
         out: list[list[float]] = []
         for text in texts:
@@ -21,10 +25,21 @@ class _DummyEmbedder:
             out.append([base + 0.1, base + 0.2, base + 0.3, base + 0.4])
         return out
 
+    @property
+    def embed_dim(self) -> int:
+        return 4
+
+    def runtime_fingerprint(self) -> str:
+        return self._runtime_fp
+
 
 def _dummy_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
-    _ = provider, model_id, base_url, timeout_s
-    return _DummyEmbedder()
+    _ = timeout_s
+    if provider == "ollama":
+        runtime_fp = build_ollama_runtime_fingerprint(base_url=base_url, model_id=model_id)
+    else:
+        runtime_fp = f"{provider}:{model_id}"
+    return _DummyEmbedder(runtime_fp=runtime_fp)
 
 
 class Phase3CliContractTests(unittest.TestCase):

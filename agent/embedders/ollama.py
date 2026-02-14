@@ -6,6 +6,7 @@ from typing import Any
 import requests
 
 from agent.embedder import Embedder
+from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 
 
 class OllamaEmbedder(Embedder):
@@ -20,7 +21,7 @@ class OllamaEmbedder(Embedder):
         return self._embed_dim
 
     def runtime_fingerprint(self) -> str:
-        return f"provider=ollama;base_url={self.base_url};model_id={self.model_id}"
+        return build_ollama_runtime_fingerprint(base_url=self.base_url, model_id=self.model_id)
 
     def embed_texts(self, texts: list[str]) -> list[array]:
         if not texts:
