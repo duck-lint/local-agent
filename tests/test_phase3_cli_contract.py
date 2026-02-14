@@ -105,12 +105,15 @@ class Phase3CliContractTests(unittest.TestCase):
                     "provider": "ollama",
                     "model_id": "nomic-embed-text-v1.5",
                     "preprocess": "obsidian_v1",
-                    "preprocess_sig": "",
+                    "chunk_preprocess_sig": "",
+                    "query_preprocess_sig": "",
                     "batch_size": 16,
                 },
                 "retrieve": {
                     "lexical_k": 5,
                     "vector_k": 5,
+                    "vector_fetch_k": 0,
+                    "rel_path_prefix": "",
                     "fusion": "simple_union",
                 },
                 "memory": {
@@ -174,6 +177,9 @@ class Phase3CliContractTests(unittest.TestCase):
         self.assertIn("missing_embeddings", phase3)
         self.assertIn("outdated_embeddings", phase3)
         self.assertIn("embeddings_total", phase3)
+        self.assertIn("retrieval_smoke_ran", phase3)
+        self.assertIn("retrieval_smoke_ok", phase3)
+        self.assertIn("retrieval_smoke_reason", phase3)
 
     def test_memory_list_json_shape(self) -> None:
         add_payload = self._capture_json(

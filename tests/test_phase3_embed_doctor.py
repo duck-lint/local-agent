@@ -5,13 +5,16 @@ import hashlib
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.__main__ import collect_doctor_checks
+from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
 from agent.memory_db import connect_db as connect_memory_db
 from agent.memory_db import init_db as init_memory_db
 from agent.phase3 import build_phase3_cfg, run_embed_phase
+from agent.retrieval import RetrievalResult, RetrievedChunk
 from agent.tools import configure_tool_security
 
 
@@ -111,12 +114,15 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
                     "provider": "ollama",
                     "model_id": "nomic-embed-text-v1.5",
                     "preprocess": "obsidian_v1",
-                    "preprocess_sig": "",
+                    "chunk_preprocess_sig": "",
+                    "query_preprocess_sig": "",
                     "batch_size": 16,
                 },
                 "retrieve": {
                     "lexical_k": 5,
                     "vector_k": 5,
+                    "vector_fetch_k": 0,
+                    "rel_path_prefix": "",
                     "fusion": "simple_union",
                 },
                 "memory": {
@@ -130,13 +136,13 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
-    def _doctor(self, cfg: dict, require_phase3: bool) -> tuple[list[str], dict]:
+    def _doctor(self, cfg: dict, require_phase3: bool, *, check_ollama: bool = False) -> tuple[list[str], dict]:
         summary: dict = {}
         checks = collect_doctor_checks(
             cfg,
             resolved_config_path=self.config_path,
             roots=self.roots,
-            check_ollama=False,
+            check_ollama=check_ollama,
             require_phase3=require_phase3,
             phase3_summary_out=summary,
         )
@@ -193,9 +199,15 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         self.assertIn("DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING", failed_codes)
         self.assertEqual(int(summary["missing_embeddings"]), 0)
 
-    def test_doctor_detects_preprocess_sig_mismatch(self) -> None:
+    def test_doctor_detects_chunk_preprocess_sig_mismatch(self) -> None:
         bad_cfg = copy.deepcopy(self.cfg)
-        bad_cfg["phase3"]["embed"]["preprocess_sig"] = "deadbeef"
+        bad_cfg["phase3"]["embed"]["chunk_preprocess_sig"] = "deadbeef"
+        failed_codes, _ = self._doctor(bad_cfg, require_phase3=False)
+        self.assertIn("DOCTOR_PHASE3_CONFIG_INVALID", failed_codes)
+
+    def test_doctor_detects_query_preprocess_sig_mismatch(self) -> None:
+        bad_cfg = copy.deepcopy(self.cfg)
+        bad_cfg["phase3"]["embed"]["query_preprocess_sig"] = "deadbeef"
         failed_codes, _ = self._doctor(bad_cfg, require_phase3=False)
         self.assertIn("DOCTOR_PHASE3_CONFIG_INVALID", failed_codes)
 
@@ -249,6 +261,150 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=False)
         self.assertIn("DOCTOR_MEMORY_DANGLING_EVIDENCE", failed_codes)
         self.assertGreater(int(summary["dangling_memory_evidence"]), 0)
+
+    def test_doctor_detects_missing_vectors_normalized_meta(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        embeddings_db = self.workroot / "embeddings" / "db" / "embeddings.sqlite"
+        with connect_embeddings_db(embeddings_db) as conn:
+            conn.execute("DELETE FROM meta WHERE key = 'vectors_normalized'")
+            conn.commit()
+        failed_codes, _ = self._doctor(copy.deepcopy(self.cfg), require_phase3=False)
+        self.assertIn("DOCTOR_EMBED_META_MISSING", failed_codes)
+
+    def test_doctor_retrieval_smoke_skip_when_no_ollama(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        _, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=False, check_ollama=False)
+        self.assertFalse(bool(summary.get("retrieval_smoke_ran")))
+        self.assertFalse(bool(summary.get("retrieval_smoke_ok")))
+        self.assertEqual(str(summary.get("retrieval_smoke_reason")), "skipped_no_ollama")
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    def test_doctor_retrieval_smoke_passes_when_ready(
+        self,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_ollama_up,
+    ) -> None:
+        _ = mock_create_embedder
+        mock_ensure_ollama_up.return_value = None
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        with connect_db(self.db_path) as conn:
+            row = conn.execute("SELECT chunk_key FROM chunks ORDER BY chunk_key LIMIT 1").fetchone()
+            self.assertIsNotNone(row)
+            chunk_key = str(row["chunk_key"])
+        mock_retrieve.return_value = RetrievalResult(
+            query="test",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="cp",
+            query_preprocess_sig="qp",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=10,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=chunk_key,
+                    rel_path="a.md",
+                    heading_path="",
+                    text="alpha",
+                    score=0.9,
+                    method="vector",
+                    lexical_score=0.0,
+                    vector_score=0.9,
+                )
+            ],
+        )
+
+        summary: dict = {}
+        checks = collect_doctor_checks(
+            copy.deepcopy(self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=True,
+            require_phase3=False,
+            phase3_summary_out=summary,
+        )
+        failure_codes = {check.error_code for check in checks if not check.ok}
+        self.assertNotIn("DOCTOR_PHASE3_RETRIEVAL_NOT_READY", failure_codes)
+        self.assertTrue(bool(summary.get("retrieval_smoke_ran")))
+        self.assertTrue(bool(summary.get("retrieval_smoke_ok")))
+        self.assertEqual(str(summary.get("retrieval_smoke_reason")), "ok")
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    def test_doctor_retrieval_smoke_fails_on_no_vector_candidates(
+        self,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_ollama_up,
+    ) -> None:
+        _ = mock_create_embedder
+        mock_ensure_ollama_up.return_value = None
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        mock_retrieve.return_value = RetrievalResult(
+            query="test",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="cp",
+            query_preprocess_sig="qp",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=10,
+            vector_candidates_scored=0,
+            vector_candidates_prefilter=0,
+            vector_candidates_postfilter=0,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[],
+        )
+
+        summary: dict = {}
+        checks = collect_doctor_checks(
+            copy.deepcopy(self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=True,
+            require_phase3=False,
+            phase3_summary_out=summary,
+        )
+        failure_codes = {check.error_code for check in checks if not check.ok}
+        self.assertIn("DOCTOR_PHASE3_RETRIEVAL_NOT_READY", failure_codes)
+        self.assertTrue(bool(summary.get("retrieval_smoke_ran")))
+        self.assertFalse(bool(summary.get("retrieval_smoke_ok")))
 
 
 if __name__ == "__main__":
