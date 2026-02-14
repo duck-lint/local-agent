@@ -59,6 +59,9 @@ DEFAULT_PHASE3: dict[str, Any] = {
         "fusion": "simple_union",
     },
     "ask": {
+        "evidence": {
+            "top_n": 8,
+        },
         "citation_validation": {
             "enabled": True,
             "strict": False,
@@ -164,6 +167,10 @@ def build_phase3_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     raw_ask = raw.get("ask")
     if isinstance(raw_ask, dict):
         ask = dict(base["ask"])
+        evidence = ask.get("evidence") if isinstance(ask.get("evidence"), dict) else {}
+        raw_evidence = raw_ask.get("evidence") if isinstance(raw_ask.get("evidence"), dict) else {}
+        merged_evidence = dict(evidence)
+        merged_evidence.update(raw_evidence)
         citation_validation = (
             ask.get("citation_validation") if isinstance(ask.get("citation_validation"), dict) else {}
         )
@@ -173,6 +180,7 @@ def build_phase3_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         merged_citation_validation = dict(citation_validation)
         merged_citation_validation.update(raw_citation_validation)
         ask.update(raw_ask)
+        ask["evidence"] = merged_evidence
         ask["citation_validation"] = merged_citation_validation
         base["ask"] = ask
 

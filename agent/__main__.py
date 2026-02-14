@@ -2818,6 +2818,7 @@ def run_ask_grounded(
         retrieve_cfg = phase3_cfg.get("retrieve") if isinstance(phase3_cfg.get("retrieve"), dict) else {}
         ask_cfg = phase3_cfg.get("ask") if isinstance(phase3_cfg.get("ask"), dict) else {}
         runs_cfg = phase3_cfg.get("runs") if isinstance(phase3_cfg.get("runs"), dict) else {}
+        ask_evidence_cfg = ask_cfg.get("evidence") if isinstance(ask_cfg.get("evidence"), dict) else {}
         citation_validation_cfg = (
             ask_cfg.get("citation_validation") if isinstance(ask_cfg.get("citation_validation"), dict) else {}
         )
@@ -2826,6 +2827,8 @@ def run_ask_grounded(
         vector_fetch_k = _as_int(retrieve_cfg.get("vector_fetch_k"), 0)
         rel_path_prefix = _string_config_value(retrieve_cfg.get("rel_path_prefix")) or ""
         fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
+        requested_top_n = _as_int(ask_evidence_cfg.get("top_n"), ASK_EVIDENCE_TOP_N)
+        sanitized_top_n = max(1, requested_top_n)
         citation_validation_enabled = _as_bool(citation_validation_cfg.get("enabled"), True)
         citation_validation_strict = _as_bool(citation_validation_cfg.get("strict"), False)
         citation_require_in_snapshot = _as_bool(citation_validation_cfg.get("require_in_snapshot"), False)
@@ -2859,7 +2862,10 @@ def run_ask_grounded(
             rel_path_prefix=rel_path_prefix,
             fusion=fusion,
         )
-        prompt_candidates = retrieval_result.candidates[:ASK_EVIDENCE_TOP_N]
+        total_results_available = len(retrieval_result.candidates)
+        prompt_candidates = retrieval_result.candidates[:sanitized_top_n]
+        effective_top_n = min(sanitized_top_n, total_results_available)
+        evidence_omitted_count = max(0, total_results_available - effective_top_n)
         evidence_rows = {}
         if (log_evidence_excerpts or citation_validation_enabled) and prompt_candidates:
             evidence_rows = fetch_chunk_rows_for_keys(
@@ -2896,6 +2902,13 @@ def run_ask_grounded(
             "vector_filter_warning": retrieval_result.vector_filter_warning,
             "candidates_count": len(retrieval_result.candidates),
             "chunk_keys": [item.chunk_key for item in retrieval_result.candidates[:20]],
+            "evidence_budget": {
+                "requested_top_n": requested_top_n,
+                "effective_top_n": effective_top_n,
+                "total_retrieval_results_available": total_results_available,
+            },
+            "evidence_selected_count": effective_top_n,
+            "evidence_omitted_count": evidence_omitted_count,
             "results": evidence_results,
             "logging_caps": {
                 "max_total_chars": max_total_evidence_chars,
@@ -2910,7 +2923,7 @@ def run_ask_grounded(
         if not retrieval_result.candidates:
             final_text = _insufficient_evidence_text(question)
         else:
-            prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=ASK_EVIDENCE_TOP_N)
+            prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=sanitized_top_n)
             second = ollama_chat(
                 base_url=cfg["ollama_base_url"],
                 model=second_model,
@@ -2942,6 +2955,11 @@ def run_ask_grounded(
             require_in_snapshot=citation_require_in_snapshot,
         )
         record["citation_validation"] = citation_validation
+        if isinstance(record["citation_validation"], dict):
+            record["citation_validation"]["snapshot"] = {
+                "top_n": effective_top_n,
+                "chunk_keys_count": len(retrieval_snapshot_sha_by_key),
+            }
 
         citation_invalid = citation_validation_enabled and not bool(citation_validation.get("valid"))
         if citation_invalid and citation_validation_strict:
