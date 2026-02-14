@@ -44,7 +44,7 @@ What it is:
 
 What it is not:
 - Not LangChain, not a planner/executor loop, not an unbounded tool agent.
-- Not a retrieval pipeline with embeddings/vector DB.
+- Not a generic distributed retrieval framework; retrieval is local, deterministic, and evidence-first.
 - Not a "trust the model by default" UX.
 
 ## Why this exists
@@ -402,8 +402,8 @@ Top-level:
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
-  - `embed` (`provider`, `model_id`, `preprocess`, `preprocess_sig`, `batch_size`)
-  - `retrieve` (`lexical_k`, `vector_k`, `fusion`)
+  - `embed` (`provider`, `model_id`, `preprocess`, `chunk_preprocess_sig`, `query_preprocess_sig`, `batch_size`)
+  - `retrieve` (`lexical_k`, `vector_k`, `vector_fetch_k`, `rel_path_prefix`, `fusion`)
   - `memory` (`durable_db_path`, `enabled`)
 
 Security (`security:`):
@@ -462,6 +462,9 @@ Frequent codes and first checks:
 - `DOCTOR_MEMORY_DANGLING_EVIDENCE`
   - durable memory references chunk keys that are no longer present in phase2 index
   - delete or repair dangling memory records
+- `DOCTOR_PHASE3_RETRIEVAL_NOT_READY`
+  - embeddings metadata looked valid but retrieval readiness smoke test failed
+  - verify Ollama availability, then run `python -m agent embed --rebuild --json` and re-run doctor
 
 Debug tip:
 - open latest `runs/<run_id>/run.json`

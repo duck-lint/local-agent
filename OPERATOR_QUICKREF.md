@@ -145,6 +145,9 @@ Check these fields in order:
 - `DOCTOR_MEMORY_DANGLING_EVIDENCE`
   - durable memory points at chunk keys not present in phase2 index
   - delete/repair dangling records
+- `DOCTOR_PHASE3_RETRIEVAL_NOT_READY`
+  - phase3 smoke retrieval failed under doctor
+  - verify Ollama is reachable, then run `python -m agent embed --rebuild --json` and rerun doctor
 
 ## 6) Security sanity checks
 
@@ -172,4 +175,4 @@ python -m agent ask "Read dupe.md and summarize it."
 3. If evidence fails, check `evidence_status` and truncation fields.
 4. If answer fails, inspect second-pass violations/retry metadata.
 5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
-   For offline preflight, use `python -m agent doctor --no-ollama`.
+   For offline preflight, use `python -m agent doctor --no-ollama` (retrieval smoke is skipped intentionally).
