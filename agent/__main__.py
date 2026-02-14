@@ -16,6 +16,7 @@ import yaml
 from agent.citation_audit import (
     build_evidence_log_entries,
     fetch_chunk_rows_for_keys,
+    format_citation_validation_footer,
     parse_citations,
     validate_citations,
 )
@@ -2960,29 +2961,25 @@ def run_ask_grounded(
             heading_match=citation_heading_match,
             normalize_heading=citation_normalize_heading,
         )
+        citation_validation_footer = ""
+        if citation_validation_enabled:
+            citation_validation_footer = format_citation_validation_footer(citation_validation)
         record["citation_validation"] = citation_validation
         if isinstance(record["citation_validation"], dict):
             record["citation_validation"]["snapshot"] = {
                 "top_n": effective_top_n,
                 "chunk_keys_count": len(retrieval_snapshot_sha_by_key),
             }
+        record["citation_validation_footer"] = citation_validation_footer
 
         citation_invalid = citation_validation_enabled and not bool(citation_validation.get("valid"))
         if citation_invalid and citation_validation_strict:
-            missing = len(citation_validation.get("missing_chunk_keys", []))
-            path_bad = len(citation_validation.get("path_mismatches", []))
-            sha_bad = len(citation_validation.get("mismatched_sha", []))
-            snapshot_bad = len(citation_validation.get("not_in_snapshot_chunk_keys", []))
             record["assistant_text"] = final_text
             if second is not None:
                 record["raw_second"] = strip_thinking(second)
             record["ok"] = False
             record["error_code"] = "ASK_CITATION_INVALID"
-            record["error_message"] = (
-                "Citation validation failed "
-                f"(missing={missing}, path_mismatches={path_bad}, sha_mismatches={sha_bad}, "
-                f"not_in_snapshot={snapshot_bad})."
-            )
+            record["error_message"] = f"Citation validation failed {citation_validation_footer}."
             print(
                 json.dumps(
                     {
@@ -2997,6 +2994,8 @@ def run_ask_grounded(
             return_code = 1
         else:
             print_output(final_text)
+            if citation_validation_enabled:
+                print_output(citation_validation_footer)
             record["assistant_text"] = final_text
             if second is not None:
                 record["raw_second"] = strip_thinking(second)

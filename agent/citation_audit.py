@@ -322,6 +322,17 @@ def validate_citations(
     }
 
 
+def format_citation_validation_footer(report: Mapping[str, Any]) -> str:
+    missing = len(list(report.get("missing_chunk_keys") or []))
+    path_mismatches = len(list(report.get("path_mismatches") or []))
+    sha_mismatches = len(list(report.get("mismatched_sha") or []))
+    not_in_snapshot = len(list(report.get("not_in_snapshot_chunk_keys") or []))
+    return (
+        f"(missing={missing}, path_mismatches={path_mismatches}, "
+        f"sha_mismatches={sha_mismatches}, not_in_snapshot={not_in_snapshot})"
+    )
+
+
 def _split_rel_and_heading(raw_path: str) -> tuple[str, str]:
     rel, sep, heading = raw_path.partition("#")
     if not sep:

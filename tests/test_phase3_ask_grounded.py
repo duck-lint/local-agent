@@ -195,6 +195,12 @@ class Phase3AskGroundedTests(unittest.TestCase):
             raise AssertionError("expected run dir")
         return json.loads((run_dirs[-1] / "run.json").read_text(encoding="utf-8"))
 
+    def _footer(self, *, missing: int, path_mismatches: int, sha_mismatches: int, not_in_snapshot: int) -> str:
+        return (
+            f"(missing={missing}, path_mismatches={path_mismatches}, "
+            f"sha_mismatches={sha_mismatches}, not_in_snapshot={not_in_snapshot})"
+        )
+
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
     @patch("agent.__main__.retrieve")
@@ -405,6 +411,62 @@ class Phase3AskGroundedTests(unittest.TestCase):
     @patch("agent.__main__.create_embedder")
     @patch("agent.__main__.retrieve")
     @patch("agent.__main__.ollama_chat")
+    def test_ask_non_strict_prints_footer_when_validation_valid(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["citation_validation"]["strict"] = False
+        key = "0123456789abcdef0123456789abcdef"
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=5,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path="a.md",
+                    heading_path="H2: Alpha",
+                    text="alpha",
+                    score=1.0,
+                    method="both",
+                    lexical_score=1.0,
+                    vector_score=1.0,
+                )
+            ],
+        )
+        mock_chat.return_value = {"message": {"content": f"Answer [source: a.md#H2: Alpha | {key}]"}}
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+        output = out.getvalue()
+        footer = self._footer(missing=0, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)
+        self.assertEqual(output.count(footer), 1)
+        self.assertLess(output.index("Answer [source:"), output.index(footer))
+        self.assertLess(output.index(footer), output.index("[logged]"))
+
+        record = self._latest_run_record()
+        self.assertEqual(record.get("citation_validation_footer"), footer)
+        self.assertTrue(bool(record["citation_validation"]["valid"]))
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
     def test_ask_non_strict_records_warnings_but_returns_answer(
         self,
         mock_chat,
@@ -450,13 +512,19 @@ class Phase3AskGroundedTests(unittest.TestCase):
         with redirect_stdout(out):
             code = run_ask_grounded(self.cfg, "question", roots=self.roots)
         self.assertEqual(code, 0)
-        self.assertIn("Answer [source: wrong.md#H2: Alpha | 0123456789abcdef0123456789abcdef]", out.getvalue())
+        output = out.getvalue()
+        self.assertIn("Answer [source: wrong.md#H2: Alpha | 0123456789abcdef0123456789abcdef]", output)
+        footer = self._footer(missing=0, path_mismatches=1, sha_mismatches=0, not_in_snapshot=0)
+        self.assertEqual(output.count(footer), 1)
+        self.assertLess(output.index("Answer [source:"), output.index(footer))
+        self.assertLess(output.index(footer), output.index("[logged]"))
 
         record = self._latest_run_record()
         self.assertTrue(bool(record.get("ok")))
         validation = record["citation_validation"]
         self.assertFalse(bool(validation["valid"]))
         self.assertEqual(len(validation["path_mismatches"]), 1)
+        self.assertEqual(record.get("citation_validation_footer"), footer)
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
@@ -508,7 +576,14 @@ class Phase3AskGroundedTests(unittest.TestCase):
         with redirect_stdout(out), redirect_stderr(err):
             code = run_ask_grounded(self.cfg, "question", roots=self.roots)
         self.assertEqual(code, 1)
-        self.assertIn("ASK_CITATION_INVALID", err.getvalue())
+        err_text = err.getvalue().strip()
+        err_lines = [line for line in err_text.splitlines() if line.strip()]
+        self.assertEqual(len(err_lines), 1)
+        err_payload = json.loads(err_lines[0])
+        self.assertEqual(err_payload.get("error_code"), "ASK_CITATION_INVALID")
+        expected_footer = self._footer(missing=0, path_mismatches=1, sha_mismatches=0, not_in_snapshot=0)
+        self.assertIn(expected_footer, str(err_payload.get("error_message", "")))
+        self.assertNotIn(expected_footer, out.getvalue())
 
         record = self._latest_run_record()
         self.assertFalse(bool(record.get("ok")))
@@ -516,6 +591,7 @@ class Phase3AskGroundedTests(unittest.TestCase):
         validation = record["citation_validation"]
         self.assertFalse(bool(validation["valid"]))
         self.assertEqual(len(validation["path_mismatches"]), 1)
+        self.assertEqual(record.get("citation_validation_footer"), expected_footer)
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")

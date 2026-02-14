@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.citation_audit import parse_citations, validate_citations
+from agent.citation_audit import format_citation_validation_footer, parse_citations, validate_citations
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
 
@@ -205,6 +205,18 @@ class CitationAuditTests(unittest.TestCase):
         )
         self.assertFalse(bool(enforced["valid"]))
         self.assertEqual(enforced["not_in_snapshot_chunk_keys"], [key_b])
+
+    def test_format_citation_validation_footer(self) -> None:
+        report = {
+            "missing_chunk_keys": ["a", "b"],
+            "path_mismatches": [{"chunk_key": "a"}],
+            "mismatched_sha": [],
+            "not_in_snapshot_chunk_keys": ["x"],
+        }
+        self.assertEqual(
+            format_citation_validation_footer(report),
+            "(missing=2, path_mismatches=1, sha_mismatches=0, not_in_snapshot=1)",
+        )
 
     def test_heading_normalization_allows_punctuation_variation(self) -> None:
         key = "cccccccccccccccccccccccccccccccc"
