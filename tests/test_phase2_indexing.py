@@ -342,6 +342,49 @@ class Phase2IndexingTests(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertEqual(int(row["c"]), 0)
 
+    def test_blank_scheme_forces_rechunk_even_when_sha_unchanged(self) -> None:
+        summary1 = index_sources(
+            db_path=self.db_path,
+            source_specs=self.sources,
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=80,
+            overlap=20,
+        )
+        self.assertEqual(summary1.errors, [])
+        self.assertEqual(summary1.docs_changed, 3)
+
+        with connect_db(self.db_path) as conn:
+            conn.execute("UPDATE chunks SET scheme = '   ' WHERE id IN (SELECT id FROM chunks ORDER BY id LIMIT 1)")
+            conn.commit()
+            row = conn.execute(
+                "SELECT COUNT(*) AS c FROM chunks WHERE trim(scheme) = ''"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertGreater(int(row["c"]), 0)
+
+        summary2 = index_sources(
+            db_path=self.db_path,
+            source_specs=self.sources,
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=80,
+            overlap=20,
+        )
+        self.assertEqual(summary2.errors, [])
+        self.assertGreater(summary2.docs_changed, 0)
+
+        with connect_db(self.db_path) as conn:
+            row = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM chunks
+                WHERE scheme IS NULL OR trim(scheme) = '' OR scheme != 'obsidian_v1'
+                """
+            ).fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(int(row["c"]), 0)
+
     def test_outside_root_indexing_works_when_containment_disabled(self) -> None:
         outside = self.tmp_path / "outside_root"
         outside.mkdir(parents=True, exist_ok=True)
