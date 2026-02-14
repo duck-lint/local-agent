@@ -363,12 +363,47 @@ def collect_doctor_checks(
                 version = int(row[0]) if row is not None else 0
                 chunks_total_row = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()
                 chunks_total = int(chunks_total_row["c"]) if chunks_total_row is not None else 0
+                docs_without_chunks_row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM docs d
+                    LEFT JOIN chunks ch ON ch.doc_id = d.id
+                    WHERE ch.id IS NULL
+                    """
+                ).fetchone()
+                docs_without_chunks = int(docs_without_chunks_row["c"]) if docs_without_chunks_row is not None else 0
+                docs_without_chunk_rows = conn.execute(
+                    """
+                    SELECT d.rel_path
+                    FROM docs d
+                    LEFT JOIN chunks ch ON ch.doc_id = d.id
+                    WHERE ch.id IS NULL
+                    ORDER BY d.rel_path
+                    LIMIT 10
+                    """
+                ).fetchall()
+                docs_without_chunk_samples = [str(r["rel_path"]) for r in docs_without_chunk_rows]
                 missing_key_row = conn.execute(
                     "SELECT COUNT(*) AS c FROM chunks WHERE chunk_key IS NULL OR trim(chunk_key) = ''"
                 ).fetchone()
                 missing_chunk_keys = int(missing_key_row["c"]) if missing_key_row is not None else 0
-                scheme_rows = conn.execute("SELECT DISTINCT scheme FROM chunks").fetchall()
-                schemes = sorted(str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None)
+                scheme_rows = conn.execute(
+                    """
+                    SELECT DISTINCT COALESCE(NULLIF(trim(scheme), ''), '<blank>') AS scheme_value
+                    FROM chunks
+                    ORDER BY scheme_value
+                    """
+                ).fetchall()
+                schemes = [str(r["scheme_value"]) for r in scheme_rows]
+                scheme_mismatch_row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM chunks
+                    WHERE scheme IS NULL OR trim(scheme) = '' OR scheme != ?
+                    """,
+                    (expected_scheme,),
+                ).fetchone()
+                scheme_mismatch_count = int(scheme_mismatch_row["c"]) if scheme_mismatch_row is not None else 0
                 stored_chunker_sig = get_meta(conn, "chunker_sig")
 
             if version != 3:
@@ -407,6 +442,29 @@ def collect_doctor_checks(
                     )
                 )
 
+            if docs_without_chunks > 0:
+                sample_suffix = (
+                    f" Sample rel_path(s): {', '.join(docs_without_chunk_samples)}."
+                    if docs_without_chunk_samples
+                    else ""
+                )
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_DOCS_WITHOUT_CHUNKS",
+                        message=f"Found docs with zero chunks: count={docs_without_chunks}.{sample_suffix}",
+                        suggested_fix="Run: python -m agent index --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_DOCS_WITHOUT_CHUNKS_OK",
+                        message="All docs have at least one chunk.",
+                    )
+                )
+
             if chunks_total > 0 and missing_chunk_keys > 0:
                 checks.append(
                     DoctorCheckResult(
@@ -425,14 +483,14 @@ def collect_doctor_checks(
                     )
                 )
 
-            mismatched = [s for s in schemes if s != expected_scheme]
-            if chunks_total > 0 and mismatched:
+            if chunks_total > 0 and scheme_mismatch_count > 0:
                 checks.append(
                     DoctorCheckResult(
                         ok=False,
                         error_code="DOCTOR_CHUNK_SCHEME_MISMATCH",
                         message=(
-                            f"Chunk schemes {schemes} do not match configured scheme={expected_scheme}."
+                            f"{scheme_mismatch_count} chunks have null/blank/mismatched scheme "
+                            f"(observed={schemes}, expected={expected_scheme})."
                         ),
                         suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
                     )
