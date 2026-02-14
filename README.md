@@ -341,7 +341,7 @@ Phase 2 introduces retrieval-ready markdown indexing with a "two sources, one in
 - index is one unified SQLite DB containing documents, chunks, provenance, and typedness metadata
 
 Important behavior:
-- existing `ask` behavior is unchanged
+- `ask` is now grounded by retrieval evidence (lexical + vector)
 - no vault note YAML is modified
 - typed/untyped classification is stored in index metadata, not in note frontmatter
 - missing metadata is explicit:
@@ -354,11 +354,37 @@ Commands:
 local-agent index
 local-agent index --rebuild
 local-agent query "coherence" --limit 5
+local-agent embed --json
+local-agent memory list --json
 local-agent doctor
 local-agent doctor --no-ollama
+local-agent doctor --require-phase3 --json
 ```
 
-Phase 2 intentionally does not include embeddings, vector memory, or chat memory. Those are deferred to Phase 3.
+Phase 3 adds embeddings, retrieval fusion, and durable memory stores with explicit provenance invariants.
+
+### Phase 3 command reference
+
+Embed corpus chunks from phase2 index:
+
+```bash
+local-agent embed [--model <id>] [--rebuild] [--batch-size N] [--limit N] [--dry-run] [--json]
+```
+
+Doctor phase3 readiness (strict mode):
+
+```bash
+local-agent doctor --require-phase3 --json
+```
+
+Durable memory commands:
+
+```bash
+local-agent memory add --type preference --source manual --content "..."
+local-agent memory list --json
+local-agent memory delete <memory_id>
+local-agent memory export memory/export.json
+```
 
 ## Configuration reference
 
@@ -374,6 +400,11 @@ Top-level:
 - `temperature`
 - `ollama_base_url`
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
+- `phase3`
+  - `embeddings_db_path`
+  - `embed` (`provider`, `model_id`, `preprocess`, `preprocess_sig`, `batch_size`)
+  - `retrieve` (`lexical_k`, `vector_k`, `fusion`)
+  - `memory` (`durable_db_path`, `enabled`)
 
 Security (`security:`):
 - `allowed_roots`
@@ -422,6 +453,15 @@ Frequent codes and first checks:
 - `DOCTOR_CHUNKER_SIG_MISMATCH`
   - preflight found stale chunking fingerprint vs configured phase2 chunking
   - run `python -m agent index --scheme obsidian_v1 --rebuild --json` (or your configured scheme)
+- `DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3`
+  - preflight found embedding rows that do not match current phase3 model/preprocess/chunk hashes
+  - run `python -m agent embed --json` (or `--rebuild --json`)
+- `DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING`
+  - phase3-required preflight found no embeddings DB
+  - run `python -m agent embed --json`
+- `DOCTOR_MEMORY_DANGLING_EVIDENCE`
+  - durable memory references chunk keys that are no longer present in phase2 index
+  - delete or repair dangling memory records
 
 Debug tip:
 - open latest `runs/<run_id>/run.json`

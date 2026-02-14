@@ -38,20 +38,27 @@ runs/
 Windows:
 ```bash
 .\.venv\Scripts\python.exe -m agent chat "ping"
-.\.venv\Scripts\python.exe -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+.\.venv\Scripts\python.exe -m agent ask "Summarize the indexed notes about coherence."
+.\.venv\Scripts\python.exe -m agent embed --json
+.\.venv\Scripts\python.exe -m agent memory list --json
 .\.venv\Scripts\python.exe -m agent doctor
 ```
 
 Cross-platform:
 ```bash
 python -m agent chat "ping"
-python -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+python -m agent ask "Summarize the indexed notes about coherence."
+python -m agent embed --json
+python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
+python -m agent doctor --require-phase3 --json
 local-agent chat "ping"
-local-agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+local-agent ask "Summarize the indexed notes about coherence."
+local-agent embed --json
+local-agent memory list --json
 local-agent doctor
-local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
 ```
 
 Model routing flags:
@@ -129,6 +136,15 @@ Check these fields in order:
 - `DOCTOR_CHUNKER_SIG_MISMATCH`
   - preflight found stale chunking fingerprint vs current config
   - run `python -m agent index --scheme obsidian_v1 --rebuild --json` (or your configured scheme)
+- `DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING`
+  - strict phase3 preflight found no embeddings DB
+  - run `python -m agent embed --json`
+- `DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3`
+  - strict phase3 preflight found outdated/mismatched embedding rows
+  - run `python -m agent embed --json` (or `--rebuild --json`)
+- `DOCTOR_MEMORY_DANGLING_EVIDENCE`
+  - durable memory points at chunk keys not present in phase2 index
+  - delete/repair dangling records
 
 ## 6) Security sanity checks
 

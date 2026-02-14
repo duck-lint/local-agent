@@ -8,3 +8,5 @@ repo_marker.py
 .DS_Store
 Thumbs.db
 "@
+dist/
+build/

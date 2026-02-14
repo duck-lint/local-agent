@@ -59,3 +59,18 @@ phase2:
     scheme: obsidian_v1
     max_chars: 1200
     overlap: 120
+phase3:
+  embeddings_db_path: "embeddings/db/embeddings.sqlite"
+  embed:
+    provider: "ollama"
+    model_id: "nomic-embed-text-v1.5"
+    preprocess: "obsidian_v1"
+    preprocess_sig: ""
+    batch_size: 32
+  retrieve:
+    lexical_k: 20
+    vector_k: 20
+    fusion: "simple_union"
+  memory:
+    durable_db_path: "memory/durable.sqlite"
+    enabled: true
