@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from agent.__main__ import (
+    deep_merge_config,
     discover_config_path,
     load_config_with_path,
     select_reread_path,
@@ -108,6 +109,46 @@ class RereadPathSelectionTests(unittest.TestCase):
     def test_falls_back_to_evidence_path_when_original_missing(self) -> None:
         chosen = select_reread_path({}, {"path": "C:/tmp/workroot/allowed/corpus/a.md"})
         self.assertEqual(chosen, "C:/tmp/workroot/allowed/corpus/a.md")
+
+
+class ConfigMergeTests(unittest.TestCase):
+    def test_deep_merge_preserves_nested_defaults(self) -> None:
+        base = {
+            "model": "base-model",
+            "security": {
+                "allowed_roots": ["base-root"],
+                "deny_hidden_paths": True,
+                "allow_any_path": False,
+            },
+            "phase2": {
+                "chunking": {
+                    "scheme": "obsidian_v1",
+                    "max_chars": 1200,
+                    "overlap": 120,
+                },
+                "sources": [{"name": "corpus"}],
+            },
+        }
+        override = {
+            "security": {
+                "allow_any_path": True,
+            },
+            "phase2": {
+                "chunking": {
+                    "max_chars": 2048,
+                },
+            },
+        }
+
+        merged = deep_merge_config(base, override)
+        self.assertEqual(merged["model"], "base-model")
+        self.assertEqual(merged["security"]["allowed_roots"], ["base-root"])
+        self.assertEqual(merged["security"]["deny_hidden_paths"], True)
+        self.assertEqual(merged["security"]["allow_any_path"], True)
+        self.assertEqual(merged["phase2"]["chunking"]["scheme"], "obsidian_v1")
+        self.assertEqual(merged["phase2"]["chunking"]["max_chars"], 2048)
+        self.assertEqual(merged["phase2"]["chunking"]["overlap"], 120)
+        self.assertEqual(merged["phase2"]["sources"], [{"name": "corpus"}])
 
 
 if __name__ == "__main__":
