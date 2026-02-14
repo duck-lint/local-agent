@@ -331,14 +331,32 @@ def doc_needs_rechunk(
     if row is not None and int(row["c"]) > 0:
         return True
 
-    scheme_rows = conn.execute(
-        "SELECT DISTINCT scheme FROM chunks WHERE doc_id = ?",
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM chunks
+        WHERE doc_id = ?
+          AND (scheme IS NULL OR trim(scheme) = '')
+        """,
         (doc_id,),
-    ).fetchall()
-    schemes = {str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None}
-    if not schemes:
+    ).fetchone()
+    if row is not None and int(row["c"]) > 0:
         return True
-    return schemes != {expected_scheme}
+
+    row = conn.execute(
+        """
+        SELECT COUNT(*) AS c
+        FROM chunks
+        WHERE doc_id = ?
+          AND scheme IS NOT NULL
+          AND trim(scheme) != ''
+          AND scheme != ?
+        """,
+        (doc_id, expected_scheme),
+    ).fetchone()
+    if row is None:
+        return False
+    return int(row["c"]) > 0
 
 
 def index_sources(
