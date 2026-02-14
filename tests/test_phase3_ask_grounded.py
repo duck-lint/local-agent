@@ -75,6 +75,9 @@ class Phase3AskGroundedTests(unittest.TestCase):
             text="alpha",
         )
 
+    def _key_for_index(self, i: int) -> str:
+        return f"{i:032x}"
+
     def tearDown(self) -> None:
         self._tmp.cleanup()
 
@@ -638,6 +641,195 @@ class Phase3AskGroundedTests(unittest.TestCase):
         self.assertTrue(bool(validation["require_in_snapshot"]))
         self.assertEqual(validation["not_in_snapshot_chunk_keys"], [b_key])
         self.assertFalse(bool(validation["valid"]))
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_top_n_honored_and_snapshot_enforced(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["evidence"] = {"top_n": 5}
+        self.cfg["phase3"]["ask"]["citation_validation"]["strict"] = False
+        self.cfg["phase3"]["ask"]["citation_validation"]["require_in_snapshot"] = True
+
+        candidates: list[RetrievedChunk] = []
+        for i in range(1, 21):
+            key = self._key_for_index(i)
+            rel = f"n{i}.md"
+            heading = f"H2: {i}"
+            self._insert_chunk(
+                chunk_key=key,
+                rel_path=rel,
+                heading_path=heading,
+                text=f"text {i}",
+            )
+            candidates.append(
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path=rel,
+                    heading_path=heading,
+                    text=f"text {i}",
+                    score=1.0 - (i * 0.01),
+                    method="both",
+                    lexical_score=1.0 - (i * 0.01),
+                    vector_score=1.0 - (i * 0.01),
+                )
+            )
+        cited_key = self._key_for_index(12)
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=20,
+            vector_candidates_scored=20,
+            vector_candidates_prefilter=20,
+            vector_candidates_postfilter=20,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=candidates,
+        )
+        mock_chat.return_value = {"message": {"content": f"Answer [source: n12.md#H2: 12 | {cited_key}]"}}
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+
+        record = self._latest_run_record()
+        retrieval = record["retrieval"]
+        budget = retrieval["evidence_budget"]
+        self.assertEqual(int(budget["requested_top_n"]), 5)
+        self.assertEqual(int(budget["effective_top_n"]), 5)
+        self.assertEqual(int(budget["total_retrieval_results_available"]), 20)
+        self.assertEqual(int(retrieval["evidence_selected_count"]), 5)
+        self.assertEqual(int(retrieval["evidence_omitted_count"]), 15)
+        validation = record["citation_validation"]
+        self.assertEqual(validation["not_in_snapshot_chunk_keys"], [cited_key])
+        self.assertFalse(bool(validation["valid"]))
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_top_n_clamps_when_larger_than_available(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["evidence"] = {"top_n": 10}
+        self.cfg["phase3"]["ask"]["citation_validation"]["enabled"] = False
+
+        candidates: list[RetrievedChunk] = []
+        for i in range(1, 4):
+            key = self._key_for_index(i)
+            candidates.append(
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path=f"a{i}.md",
+                    heading_path=f"H2: {i}",
+                    text=f"text {i}",
+                    score=1.0 - (i * 0.1),
+                    method="both",
+                    lexical_score=1.0 - (i * 0.1),
+                    vector_score=1.0 - (i * 0.1),
+                )
+            )
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=3,
+            vector_candidates_scored=3,
+            vector_candidates_prefilter=3,
+            vector_candidates_postfilter=3,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=candidates,
+        )
+        mock_chat.return_value = {"message": {"content": f"Answer [source: a1.md#H2: 1 | {self._key_for_index(1)}]"}}
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+        record = self._latest_run_record()
+        budget = record["retrieval"]["evidence_budget"]
+        self.assertEqual(int(budget["requested_top_n"]), 10)
+        self.assertEqual(int(budget["effective_top_n"]), 3)
+        self.assertEqual(int(record["retrieval"]["evidence_omitted_count"]), 0)
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_top_n_non_positive_clamps_to_one(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["evidence"] = {"top_n": 0}
+        self.cfg["phase3"]["ask"]["citation_validation"]["enabled"] = False
+
+        candidates: list[RetrievedChunk] = []
+        for i in range(1, 4):
+            key = self._key_for_index(i)
+            candidates.append(
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path=f"z{i}.md",
+                    heading_path=f"H2: {i}",
+                    text=f"text {i}",
+                    score=1.0 - (i * 0.1),
+                    method="both",
+                    lexical_score=1.0 - (i * 0.1),
+                    vector_score=1.0 - (i * 0.1),
+                )
+            )
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=3,
+            vector_candidates_scored=3,
+            vector_candidates_prefilter=3,
+            vector_candidates_postfilter=3,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=candidates,
+        )
+        mock_chat.return_value = {"message": {"content": f"Answer [source: z1.md#H2: 1 | {self._key_for_index(1)}]"}}
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+        record = self._latest_run_record()
+        budget = record["retrieval"]["evidence_budget"]
+        self.assertEqual(int(budget["requested_top_n"]), 0)
+        self.assertEqual(int(budget["effective_top_n"]), 1)
+        self.assertEqual(int(record["retrieval"]["evidence_selected_count"]), 1)
+        self.assertEqual(int(record["retrieval"]["evidence_omitted_count"]), 2)
 
 
 if __name__ == "__main__":

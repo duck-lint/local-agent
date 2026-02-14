@@ -77,12 +77,16 @@ Citation snapshot enforcement (recommended for strict grounding):
 ```yaml
 phase3:
   ask:
+    evidence:
+      top_n: 8
     citation_validation:
       enabled: true
       strict: true
       require_in_snapshot: true
 ```
 This requires citations to reference chunk keys from the run's retrieved evidence snapshot.
+If strict validation trips too often, increase `top_n` moderately (for example `8 -> 12` or `16`).
+Tradeoff: larger `top_n` increases prompt size and evidence payload, though excerpt logging caps still apply.
 
 Model routing flags:
 ```bash

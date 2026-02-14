@@ -423,6 +423,8 @@ local-agent memory export memory/export.json
 Citation hygiene option:
 - `phase3.ask.citation_validation.require_in_snapshot: true` enforces that cited chunk keys must come from the retrieved evidence snapshot used for that run.
 - Recommended for fail-closed behavior: combine with `phase3.ask.citation_validation.strict: true`.
+- `phase3.ask.evidence.top_n` controls the snapshot/prompt evidence bandwidth (default `8`).
+- If strict snapshot checks are too tight, raise `top_n` modestly (for example `8 -> 12` or `16`); tradeoff is larger prompt and larger evidence logging payload before caps.
 
 ## Configuration reference
 
@@ -452,6 +454,7 @@ Top-level:
     - `torch.pooling`, `torch.normalize`
     - `torch.trust_remote_code`, `torch.offline_only`
   - `retrieve` (`lexical_k`, `vector_k`, `vector_fetch_k`, `rel_path_prefix`, `fusion`)
+  - `ask.evidence` (`top_n`)
   - `ask.citation_validation` (`enabled`, `strict`, `require_in_snapshot`)
   - `runs` (`log_evidence_excerpts`, `max_total_evidence_chars`, `max_excerpt_chars`)
   - `memory` (`durable_db_path`, `enabled`)
