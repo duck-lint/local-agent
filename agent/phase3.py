@@ -13,7 +13,9 @@ from agent.embedding_fingerprint import (
     pack_vector_f32_le,
     preprocess_chunk_text,
 )
+from agent.embedder import Embedder
 from agent.embedders.ollama import OllamaEmbedder
+from agent.embedders.torch_embedder import TorchEmbedder
 from agent.embeddings_db import (
     connect_db as connect_embeddings_db,
     count_embeddings,
@@ -30,12 +32,24 @@ from agent.index_db import init_db as init_index_db
 DEFAULT_PHASE3: dict[str, Any] = {
     "embeddings_db_path": "embeddings/db/embeddings.sqlite",
     "embed": {
-        "provider": "ollama",
-        "model_id": "nomic-embed-text-v1.5",
+        "provider": "torch",
+        "model_id": "sentence-transformers/all-MiniLM-L6-v2",
         "preprocess": "obsidian_v1",
         "chunk_preprocess_sig": "",
         "query_preprocess_sig": "",
-        "batch_size": 32,
+        "batch_size": 64,
+        "torch": {
+            "local_model_path": "",
+            "cache_dir": "",
+            "device": "auto",
+            "dtype": "float16",
+            "batch_size": 64,
+            "max_length": 512,
+            "pooling": "mean",
+            "normalize": True,
+            "trust_remote_code": False,
+            "offline_only": True,
+        },
     },
     "retrieve": {
         "lexical_k": 20,
@@ -118,6 +132,11 @@ def build_phase3_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
     if isinstance(raw_embed, dict):
         embed = dict(base["embed"])
         embed.update(raw_embed)
+        base_torch_cfg = dict(DEFAULT_PHASE3["embed"]["torch"])
+        raw_torch_cfg = raw_embed.get("torch")
+        if isinstance(raw_torch_cfg, dict):
+            base_torch_cfg.update(raw_torch_cfg)
+        embed["torch"] = base_torch_cfg
         base["embed"] = embed
 
     raw_retrieve = raw.get("retrieve")
@@ -171,14 +190,33 @@ def parse_embed_runtime(
     batch_size_override: Optional[int],
 ) -> tuple[str, str, str, str, str, int]:
     embed_cfg = phase3_cfg.get("embed") if isinstance(phase3_cfg.get("embed"), dict) else {}
-    provider = _string(embed_cfg.get("provider"), "ollama").lower()
-    model_id = _string(model_override or embed_cfg.get("model_id"), "nomic-embed-text-v1.5")
+    provider = _string(embed_cfg.get("provider"), "torch").lower()
+    model_id = _string(model_override or embed_cfg.get("model_id"), "sentence-transformers/all-MiniLM-L6-v2")
     preprocess_name = _string(embed_cfg.get("preprocess"), "obsidian_v1")
     configured_chunk_sig = _string(embed_cfg.get("chunk_preprocess_sig"), "")
     configured_query_sig = _string(embed_cfg.get("query_preprocess_sig"), "")
-    batch_size = _as_int(batch_size_override if batch_size_override is not None else embed_cfg.get("batch_size"), 32)
+    torch_cfg = embed_cfg.get("torch") if isinstance(embed_cfg.get("torch"), dict) else {}
+    torch_batch_size = _as_int(torch_cfg.get("batch_size"), 64)
+    batch_size = _as_int(
+        batch_size_override if batch_size_override is not None else embed_cfg.get("batch_size"),
+        torch_batch_size,
+    )
     if batch_size <= 0:
         raise ValueError("phase3.embed.batch_size must be > 0")
+    if provider not in {"ollama", "torch"}:
+        raise ValueError("phase3.embed.provider must be one of: ollama|torch")
+    if provider == "torch":
+        pooling = _string(torch_cfg.get("pooling"), "mean").lower()
+        if pooling != "mean":
+            raise ValueError("phase3.embed.torch.pooling must be 'mean'")
+        if not _as_bool(torch_cfg.get("normalize"), True):
+            raise ValueError("phase3.embed.torch.normalize must be true")
+        device = _string(torch_cfg.get("device"), "auto").lower()
+        if device not in {"auto", "cpu", "cuda"}:
+            raise ValueError("phase3.embed.torch.device must be one of auto|cpu|cuda")
+        dtype = _string(torch_cfg.get("dtype"), "float16").lower()
+        if dtype not in {"float16", "float32"}:
+            raise ValueError("phase3.embed.torch.dtype must be one of float16|float32")
 
     computed_chunk_sig = compute_chunk_preprocess_sig(preprocess_name)
     computed_query_sig = compute_query_preprocess_sig(preprocess_name)
@@ -202,10 +240,30 @@ def create_embedder(
     model_id: str,
     base_url: str,
     timeout_s: int,
-):
-    if provider != "ollama":
+    phase3_cfg: Optional[dict[str, Any]] = None,
+) -> Embedder:
+    if provider == "ollama":
+        return OllamaEmbedder(base_url=base_url, model_id=model_id, timeout_s=timeout_s)
+    if provider != "torch":
         raise ValueError(f"Unsupported embedding provider: {provider}")
-    return OllamaEmbedder(base_url=base_url, model_id=model_id, timeout_s=timeout_s)
+
+    embed_cfg = {}
+    if isinstance(phase3_cfg, dict):
+        embed_cfg = phase3_cfg.get("embed") if isinstance(phase3_cfg.get("embed"), dict) else {}
+    torch_cfg = embed_cfg.get("torch") if isinstance(embed_cfg.get("torch"), dict) else {}
+    return TorchEmbedder(
+        model_id=model_id,
+        local_model_path=_string(torch_cfg.get("local_model_path"), ""),
+        cache_dir=_string(torch_cfg.get("cache_dir"), ""),
+        device=_string(torch_cfg.get("device"), "auto"),
+        dtype=_string(torch_cfg.get("dtype"), "float16"),
+        batch_size=_as_int(torch_cfg.get("batch_size"), _as_int(embed_cfg.get("batch_size"), 64)),
+        max_length=_as_int(torch_cfg.get("max_length"), 512),
+        pooling=_string(torch_cfg.get("pooling"), "mean"),
+        normalize=_as_bool(torch_cfg.get("normalize"), True),
+        trust_remote_code=_as_bool(torch_cfg.get("trust_remote_code"), False),
+        offline_only=_as_bool(torch_cfg.get("offline_only"), True),
+    )
 
 
 def load_phase2_chunks(phase2_db_path: Path) -> list[dict[str, str]]:
@@ -333,7 +391,7 @@ def run_embed_phase(
     factory = embedder_factory
     if factory is None:
         def _default_factory(p: str, m: str, b: str, t: int):
-            return create_embedder(provider=p, model_id=m, base_url=b, timeout_s=t)
+            return create_embedder(provider=p, model_id=m, base_url=b, timeout_s=t, phase3_cfg=phase3_cfg)
         factory = _default_factory
     embedder = factory(provider, model_id, base_url, timeout_s)
 
@@ -348,7 +406,7 @@ def run_embed_phase(
     if len(probe_vectors) != 1:
         raise ValueError(f"Embedding probe returned unexpected count: {len(probe_vectors)}")
     probe_vector = normalize_vector(probe_vectors[0])
-    dim = len(probe_vector)
+    dim = int(getattr(embedder, "embed_dim", 0)) or len(probe_vector)
     if dim <= 0:
         raise ValueError("Embedding dimension must be > 0")
 

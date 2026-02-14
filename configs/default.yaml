@@ -62,12 +62,23 @@ phase2:
 phase3:
   embeddings_db_path: "embeddings/db/embeddings.sqlite"
   embed:
-    provider: "ollama"
-    model_id: "nomic-embed-text-v1.5"
+    provider: "torch"
+    model_id: "sentence-transformers/all-MiniLM-L6-v2"
     preprocess: "obsidian_v1"
     chunk_preprocess_sig: ""
     query_preprocess_sig: ""
-    batch_size: 32
+    batch_size: 64
+    torch:
+      local_model_path: ""
+      cache_dir: ""
+      device: "auto"
+      dtype: "float16"
+      batch_size: 64
+      max_length: 512
+      pooling: "mean"
+      normalize: true
+      trust_remote_code: false
+      offline_only: true
   retrieve:
     lexical_k: 20
     vector_k: 20

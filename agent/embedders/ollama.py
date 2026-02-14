@@ -1,5 +1,6 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+from array import array
 from typing import Any
 
 import requests
@@ -12,18 +13,31 @@ class OllamaEmbedder(Embedder):
         self.base_url = base_url.rstrip("/")
         self.model_id = model_id
         self.timeout_s = int(timeout_s)
+        self._embed_dim = 0
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    @property
+    def embed_dim(self) -> int:
+        return self._embed_dim
+
+    def runtime_fingerprint(self) -> str:
+        return f"provider=ollama;base_url={self.base_url};model_id={self.model_id}"
+
+    def embed_texts(self, texts: list[str]) -> list[array]:
         if not texts:
             return []
 
         bulk = self._try_embed_api_embed_bulk(texts)
         if bulk is not None:
-            return bulk
+            out = [array("f", vec) for vec in bulk]
+            if out and self._embed_dim <= 0:
+                self._embed_dim = len(out[0])
+            return out
 
-        out: list[list[float]] = []
+        out: list[array] = []
         for text in texts:
-            out.append(self._embed_single(text))
+            out.append(array("f", self._embed_single(text)))
+        if out and self._embed_dim <= 0:
+            self._embed_dim = len(out[0])
         return out
 
     def _embed_single(self, text: str) -> list[float]:

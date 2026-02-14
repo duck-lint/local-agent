@@ -670,13 +670,13 @@ def collect_doctor_checks(
             )
         )
         embed_config_valid = True
-        if provider != "ollama":
+        if provider not in {"ollama", "torch"}:
             checks.append(
                 DoctorCheckResult(
                     ok=False,
                     error_code="DOCTOR_EMBED_PROVIDER_UNSUPPORTED",
-                    message=f"Unsupported phase3.embed.provider={provider}. Expected 'ollama'.",
-                    suggested_fix="Set phase3.embed.provider to 'ollama'.",
+                    message=f"Unsupported phase3.embed.provider={provider}. Expected 'ollama' or 'torch'.",
+                    suggested_fix="Set phase3.embed.provider to 'ollama' or 'torch'.",
                 )
             )
     except Exception as exc:
@@ -925,10 +925,11 @@ def collect_doctor_checks(
             lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
             fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
             smoke_embedder = create_embedder(
-                provider="ollama",
+                provider=provider,
                 model_id=embed_model_id,
                 base_url=cfg["ollama_base_url"],
                 timeout_s=cfg["timeout_s"],
+                phase3_cfg=phase3_cfg,
             )
             smoke = retrieve(
                 "test",
@@ -2737,6 +2738,7 @@ def run_ask_grounded(
             model_id=model_id,
             base_url=cfg["ollama_base_url"],
             timeout_s=cfg["timeout_s"],
+            phase3_cfg=phase3_cfg,
         )
         retrieval_result = retrieve(
             question,
