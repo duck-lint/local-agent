@@ -78,7 +78,7 @@ def parse_citations(answer: str) -> list[ParsedCitation]:
             ParsedCitation(
                 chunk_key=chunk_key,
                 rel_path=rel_path,
-                heading_path=_normalize_heading(heading_path),
+                heading_path=_normalize_citation_heading_token(heading_path),
             )
         )
     return out
@@ -149,7 +149,13 @@ def validate_citations(
     enabled: bool,
     strict: bool,
     require_in_snapshot: bool,
+    heading_match: str = "prefix",
+    normalize_heading: bool = True,
 ) -> dict[str, Any]:
+    heading_strategy = str(heading_match or "prefix").strip().lower() or "prefix"
+    if heading_strategy not in {"exact", "prefix", "ignore"}:
+        heading_strategy = "prefix"
+    normalize_heading_flag = bool(normalize_heading)
     parsed_payload = [
         {
             "chunk_key": item.chunk_key,
@@ -163,6 +169,8 @@ def validate_citations(
             "enabled": False,
             "strict": bool(strict),
             "require_in_snapshot": bool(require_in_snapshot),
+            "heading_match_strategy": heading_strategy,
+            "normalize_heading": normalize_heading_flag,
             "parsed_citations": parsed_payload,
             "not_in_snapshot_chunk_keys": [],
             "missing_chunk_keys": [],
@@ -180,7 +188,9 @@ def validate_citations(
     path_mismatches: list[dict[str, str]] = []
     sha_unchecked: set[str] = set()
     not_in_snapshot: set[str] = set()
+    invalid_path_mismatch = False
     seen_sha_mismatch: set[str] = set()
+    seen_path_mismatch: set[tuple[str, str, str, str, str, str]] = set()
     snapshot_keys = set(retrieval_snapshot_sha_by_key.keys())
 
     for citation in parsed_citations:
@@ -193,17 +203,89 @@ def validate_citations(
             continue
 
         expected_rel = row.rel_path
-        expected_heading = _normalize_heading(row.heading_path)
-        if citation.rel_path != expected_rel or _normalize_heading(citation.heading_path) != expected_heading:
-            path_mismatches.append(
-                {
-                    "chunk_key": citation.chunk_key,
-                    "expected_rel_path": expected_rel,
-                    "got_rel_path": citation.rel_path,
-                    "expected_heading_path": expected_heading,
-                    "got_heading_path": _normalize_heading(citation.heading_path),
-                }
+        rel_mismatch = citation.rel_path != expected_rel
+        expected_heading_raw = _normalize_citation_heading_token(row.heading_path)
+        got_heading_raw = _normalize_citation_heading_token(citation.heading_path)
+        heading_mismatch_reason = ""
+        heading_invalid = False
+        heading_mismatch_for_report = False
+        expected_heading_cmp = _canonicalize_heading_path(
+            expected_heading_raw,
+            normalize_heading=normalize_heading_flag,
+        )
+        got_heading_cmp = _canonicalize_heading_path(
+            got_heading_raw,
+            normalize_heading=normalize_heading_flag,
+        )
+
+        if heading_strategy == "ignore":
+            heading_mismatch_for_report = expected_heading_raw != got_heading_raw
+            heading_invalid = False
+            if heading_mismatch_for_report:
+                heading_mismatch_reason = "ignored"
+        else:
+            expected_segs = _split_heading_path(expected_heading_raw, normalize_heading=normalize_heading_flag)
+            got_segs = _split_heading_path(got_heading_raw, normalize_heading=normalize_heading_flag)
+            if heading_strategy == "exact":
+                heading_invalid = expected_segs != got_segs
+                heading_mismatch_for_report = heading_invalid
+                if heading_invalid:
+                    heading_mismatch_reason = _heading_mismatch_reason(
+                        expected_heading_raw=expected_heading_raw,
+                        got_heading_raw=got_heading_raw,
+                        expected_segs=expected_segs,
+                        got_segs=got_segs,
+                        strategy=heading_strategy,
+                    )
+            else:
+                if not got_segs:
+                    heading_invalid = bool(expected_segs)
+                elif len(got_segs) > len(expected_segs):
+                    heading_invalid = True
+                else:
+                    heading_invalid = expected_segs[: len(got_segs)] != got_segs
+                heading_mismatch_for_report = heading_invalid
+                if heading_invalid:
+                    heading_mismatch_reason = "prefix"
+
+        mismatch_kind = "none"
+        if rel_mismatch and heading_mismatch_for_report:
+            mismatch_kind = "both"
+        elif rel_mismatch:
+            mismatch_kind = "rel_path"
+        elif heading_mismatch_for_report:
+            mismatch_kind = "heading"
+
+        if mismatch_kind != "none":
+            mismatch_key = (
+                citation.chunk_key,
+                expected_rel,
+                citation.rel_path,
+                expected_heading_cmp,
+                got_heading_cmp,
+                mismatch_kind,
             )
+            if mismatch_key not in seen_path_mismatch:
+                path_mismatches.append(
+                    {
+                        "chunk_key": citation.chunk_key,
+                        "expected_rel_path": expected_rel,
+                        "got_rel_path": citation.rel_path,
+                        "expected_heading_path": expected_heading_raw,
+                        "got_heading_path": got_heading_raw,
+                        "normalized_expected_heading_path": expected_heading_cmp,
+                        "normalized_got_heading_path": got_heading_cmp,
+                        "mismatch_kind": mismatch_kind,
+                        "heading_invalid": bool(heading_invalid),
+                        "heading_match_strategy": heading_strategy,
+                        "normalize_heading": normalize_heading_flag,
+                        "heading_mismatch_reason": heading_mismatch_reason,
+                    }
+                )
+                seen_path_mismatch.add(mismatch_key)
+
+        if rel_mismatch or heading_invalid:
+            invalid_path_mismatch = True
 
         snapshot_sha = str(retrieval_snapshot_sha_by_key.get(citation.chunk_key) or "")
         if not snapshot_sha:
@@ -223,6 +305,8 @@ def validate_citations(
         "enabled": True,
         "strict": bool(strict),
         "require_in_snapshot": bool(require_in_snapshot),
+        "heading_match_strategy": heading_strategy,
+        "normalize_heading": normalize_heading_flag,
         "parsed_citations": parsed_payload,
         "not_in_snapshot_chunk_keys": sorted(not_in_snapshot),
         "missing_chunk_keys": sorted(missing_keys),
@@ -232,7 +316,7 @@ def validate_citations(
         "valid": (
             not missing_keys
             and not mismatched_sha
-            and not path_mismatches
+            and not invalid_path_mismatch
             and (not require_in_snapshot or not not_in_snapshot)
         ),
     }
@@ -245,8 +329,57 @@ def _split_rel_and_heading(raw_path: str) -> tuple[str, str]:
     return rel.strip(), heading.strip()
 
 
-def _normalize_heading(heading_path: str) -> str:
+def _normalize_citation_heading_token(heading_path: str) -> str:
     heading = (heading_path or "").strip()
     if heading.lower() == "root":
         return ""
     return heading
+
+
+def _normalize_heading_segment(segment: str, *, normalize_heading: bool) -> str:
+    text = str(segment or "").strip()
+    if not normalize_heading:
+        return text
+    text = " ".join(text.split())
+    if ":" in text:
+        prefix, title = text.split(":", 1)
+        prefix = prefix.strip()
+        title = " ".join(title.split()).rstrip(":;,.!?").strip()
+        if title:
+            return f"{prefix}: {title}"
+        return prefix.rstrip(":;,.!?")
+    return text.rstrip(":;,.!?").strip()
+
+
+def _split_heading_path(path: str, *, normalize_heading: bool) -> list[str]:
+    raw = _normalize_citation_heading_token(path)
+    if not raw:
+        return []
+    parts = [_normalize_heading_segment(seg, normalize_heading=normalize_heading) for seg in raw.split(">")]
+    return [seg for seg in parts if seg]
+
+
+def _canonicalize_heading_path(path: str, *, normalize_heading: bool) -> str:
+    segs = _split_heading_path(path, normalize_heading=normalize_heading)
+    return " > ".join(segs)
+
+
+def _heading_mismatch_reason(
+    *,
+    expected_heading_raw: str,
+    got_heading_raw: str,
+    expected_segs: list[str],
+    got_segs: list[str],
+    strategy: str,
+) -> str:
+    if strategy == "prefix":
+        return "prefix"
+    if got_segs and len(got_segs) < len(expected_segs) and expected_segs[: len(got_segs)] == got_segs:
+        return "prefix"
+    expected_norm = _canonicalize_heading_path(expected_heading_raw, normalize_heading=True)
+    got_norm = _canonicalize_heading_path(got_heading_raw, normalize_heading=True)
+    expected_raw = _canonicalize_heading_path(expected_heading_raw, normalize_heading=False)
+    got_raw = _canonicalize_heading_path(got_heading_raw, normalize_heading=False)
+    if expected_norm == got_norm and expected_raw != got_raw:
+        return "punctuation"
+    return "other"

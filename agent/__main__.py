@@ -2832,6 +2832,10 @@ def run_ask_grounded(
         citation_validation_enabled = _as_bool(citation_validation_cfg.get("enabled"), True)
         citation_validation_strict = _as_bool(citation_validation_cfg.get("strict"), False)
         citation_require_in_snapshot = _as_bool(citation_validation_cfg.get("require_in_snapshot"), False)
+        citation_heading_match = (_string_config_value(citation_validation_cfg.get("heading_match")) or "prefix").lower()
+        if citation_heading_match not in {"exact", "prefix", "ignore"}:
+            raise ValueError("phase3.ask.citation_validation.heading_match must be one of exact|prefix|ignore")
+        citation_normalize_heading = _as_bool(citation_validation_cfg.get("normalize_heading"), True)
         log_evidence_excerpts = _as_bool(runs_cfg.get("log_evidence_excerpts"), True)
         max_total_evidence_chars = max(0, _as_int(runs_cfg.get("max_total_evidence_chars"), 200000))
         max_excerpt_chars = max(0, _as_int(runs_cfg.get("max_excerpt_chars"), 1200))
@@ -2953,6 +2957,8 @@ def run_ask_grounded(
             enabled=citation_validation_enabled,
             strict=citation_validation_strict,
             require_in_snapshot=citation_require_in_snapshot,
+            heading_match=citation_heading_match,
+            normalize_heading=citation_normalize_heading,
         )
         record["citation_validation"] = citation_validation
         if isinstance(record["citation_validation"], dict):

@@ -93,6 +93,8 @@ phase3:
       enabled: true
       strict: true
       require_in_snapshot: true
+      heading_match: "prefix"
+      normalize_heading: true
   runs:
     log_evidence_excerpts: true
     max_total_evidence_chars: 200000

@@ -66,6 +66,8 @@ DEFAULT_PHASE3: dict[str, Any] = {
             "enabled": True,
             "strict": False,
             "require_in_snapshot": False,
+            "heading_match": "prefix",
+            "normalize_heading": True,
         }
     },
     "runs": {
