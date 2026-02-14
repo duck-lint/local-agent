@@ -248,7 +248,7 @@ Requirements:
 - Python 3.10+ (3.11 recommended)
 - Ollama running locally (default `http://127.0.0.1:11434`)
 - repo config available at `configs/default.yaml` (always used; see Config location below)
-- dependencies: `requests`, `pyyaml`
+- default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
 
 Install (editable):
 
@@ -264,6 +264,23 @@ On Linux/macOS, use:
 source .venv/bin/activate
 pip install -e .
 ```
+
+Install from requirements (torch-first default environment):
+
+```bash
+pip install -r requirements.txt
+```
+
+### Lean install (no torch)
+
+If you want a lean environment without Torch, install only core dependencies explicitly instead of `requirements.txt`, for example:
+
+```bash
+pip install requests PyYAML
+pip install -e .
+```
+
+`phase3.embed.provider: torch` will fail unless Torch + embedding dependencies are installed.
 
 Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
