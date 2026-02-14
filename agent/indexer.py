@@ -298,7 +298,7 @@ def _validated_readable_path(path: Path) -> Path:
     return resolve_and_validate_path(Path(rel).as_posix(), policy)
 
 
-def _compute_chunker_sig(*, scheme: str, max_chars: int, overlap: int) -> str:
+def compute_chunker_sig(scheme: str, max_chars: int, overlap: int) -> str:
     payload = {
         "scheme": scheme,
         "max_chars": int(max_chars),
@@ -363,7 +363,7 @@ def index_sources(
     chunks_written = 0
 
     with connect_db(db_path) as conn:
-        chunker_sig = _compute_chunker_sig(scheme=scheme, max_chars=max_chars, overlap=overlap)
+        chunker_sig = compute_chunker_sig(scheme=scheme, max_chars=max_chars, overlap=overlap)
         stored_sig = get_meta(conn, "chunker_sig")
         force_rechunk_all = bool(force_rebuild)
         if stored_sig != chunker_sig:

@@ -14,7 +14,7 @@ import requests
 import yaml
 
 from agent.index_db import connect_db, get_meta, init_db, query_chunks_lexical
-from agent.indexer import index_sources, parse_sources_from_config
+from agent.indexer import compute_chunker_sig, index_sources, parse_sources_from_config
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.tools import TOOLS, ToolError, configure_tool_security, get_read_text_file_policy
 
@@ -296,10 +296,12 @@ def collect_doctor_checks(
     # Phase2 config and sources check
     source_specs: List[Any] = []
     expected_scheme = "obsidian_v1"
+    expected_max_chars = 1200
+    expected_overlap = 120
     phase2_config_ok = True
     try:
         source_specs = parse_sources_from_config(phase2_cfg)
-        expected_scheme, _, _ = _chunking_cfg_from_phase2(phase2_cfg)
+        expected_scheme, expected_max_chars, expected_overlap = _chunking_cfg_from_phase2(phase2_cfg)
     except Exception as exc:
         phase2_config_ok = False
         checks.append(
@@ -340,6 +342,11 @@ def collect_doctor_checks(
 
     # Index schema and chunk integrity check
     db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
+    expected_chunker_sig = compute_chunker_sig(
+        scheme=expected_scheme,
+        max_chars=expected_max_chars,
+        overlap=expected_overlap,
+    )
     try:
         init_db(db_path)
         with connect_db(db_path) as conn:
@@ -353,7 +360,7 @@ def collect_doctor_checks(
             missing_chunk_keys = int(missing_key_row["c"]) if missing_key_row is not None else 0
             scheme_rows = conn.execute("SELECT DISTINCT scheme FROM chunks").fetchall()
             schemes = sorted(str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None)
-            chunker_sig = get_meta(conn, "chunker_sig")
+            stored_chunker_sig = get_meta(conn, "chunker_sig")
 
         if version != 3:
             checks.append(
@@ -430,7 +437,7 @@ def collect_doctor_checks(
                 )
             )
 
-        if chunks_total > 0 and not chunker_sig:
+        if chunks_total > 0 and not stored_chunker_sig:
             checks.append(
                 DoctorCheckResult(
                     ok=False,
@@ -445,6 +452,32 @@ def collect_doctor_checks(
                     ok=True,
                     error_code="DOCTOR_CHUNKER_SIG_OK",
                     message="Index meta.chunker_sig is present.",
+                )
+            )
+
+        if (
+            chunks_total > 0
+            and isinstance(stored_chunker_sig, str)
+            and stored_chunker_sig
+            and stored_chunker_sig != expected_chunker_sig
+        ):
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_CHUNKER_SIG_MISMATCH",
+                    message=(
+                        "Index meta.chunker_sig does not match configured chunking "
+                        f"(stored={stored_chunker_sig}, expected={expected_chunker_sig})."
+                    ),
+                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_CHUNKER_SIG_MATCH",
+                    message="Index meta.chunker_sig matches configured chunking.",
                 )
             )
     except Exception as exc:
