@@ -62,6 +62,7 @@ DEFAULT_PHASE3: dict[str, Any] = {
         "citation_validation": {
             "enabled": True,
             "strict": False,
+            "require_in_snapshot": False,
         }
     },
     "runs": {

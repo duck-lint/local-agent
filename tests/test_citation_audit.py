@@ -159,6 +159,7 @@ class CitationAuditTests(unittest.TestCase):
             retrieval_snapshot_sha_by_key={chunk_key: "deadbeef"},
             enabled=True,
             strict=False,
+            require_in_snapshot=False,
         )
         self.assertFalse(bool(report["valid"]))
         self.assertEqual(report["missing_chunk_keys"], ["fedcba9876543210fedcba9876543210"])

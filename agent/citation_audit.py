@@ -148,6 +148,7 @@ def validate_citations(
     retrieval_snapshot_sha_by_key: Mapping[str, str],
     enabled: bool,
     strict: bool,
+    require_in_snapshot: bool,
 ) -> dict[str, Any]:
     parsed_payload = [
         {
@@ -161,7 +162,9 @@ def validate_citations(
         return {
             "enabled": False,
             "strict": bool(strict),
+            "require_in_snapshot": bool(require_in_snapshot),
             "parsed_citations": parsed_payload,
+            "not_in_snapshot_chunk_keys": [],
             "missing_chunk_keys": [],
             "mismatched_sha": [],
             "path_mismatches": [],
@@ -176,9 +179,14 @@ def validate_citations(
     mismatched_sha: list[dict[str, str]] = []
     path_mismatches: list[dict[str, str]] = []
     sha_unchecked: set[str] = set()
+    not_in_snapshot: set[str] = set()
     seen_sha_mismatch: set[str] = set()
+    snapshot_keys = set(retrieval_snapshot_sha_by_key.keys())
 
     for citation in parsed_citations:
+        if citation.chunk_key not in snapshot_keys:
+            not_in_snapshot.add(citation.chunk_key)
+
         row = db_rows.get(citation.chunk_key)
         if row is None:
             missing_keys.add(citation.chunk_key)
@@ -214,12 +222,19 @@ def validate_citations(
     return {
         "enabled": True,
         "strict": bool(strict),
+        "require_in_snapshot": bool(require_in_snapshot),
         "parsed_citations": parsed_payload,
+        "not_in_snapshot_chunk_keys": sorted(not_in_snapshot),
         "missing_chunk_keys": sorted(missing_keys),
         "mismatched_sha": mismatched_sha,
         "path_mismatches": path_mismatches,
         "sha_unchecked_chunk_keys": sorted(sha_unchecked),
-        "valid": not missing_keys and not mismatched_sha and not path_mismatches,
+        "valid": (
+            not missing_keys
+            and not mismatched_sha
+            and not path_mismatches
+            and (not require_in_snapshot or not not_in_snapshot)
+        ),
     }
 
 

@@ -2828,6 +2828,7 @@ def run_ask_grounded(
         fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
         citation_validation_enabled = _as_bool(citation_validation_cfg.get("enabled"), True)
         citation_validation_strict = _as_bool(citation_validation_cfg.get("strict"), False)
+        citation_require_in_snapshot = _as_bool(citation_validation_cfg.get("require_in_snapshot"), False)
         log_evidence_excerpts = _as_bool(runs_cfg.get("log_evidence_excerpts"), True)
         max_total_evidence_chars = max(0, _as_int(runs_cfg.get("max_total_evidence_chars"), 200000))
         max_excerpt_chars = max(0, _as_int(runs_cfg.get("max_excerpt_chars"), 1200))
@@ -2938,6 +2939,7 @@ def run_ask_grounded(
             retrieval_snapshot_sha_by_key=retrieval_snapshot_sha_by_key,
             enabled=citation_validation_enabled,
             strict=citation_validation_strict,
+            require_in_snapshot=citation_require_in_snapshot,
         )
         record["citation_validation"] = citation_validation
 
@@ -2946,6 +2948,7 @@ def run_ask_grounded(
             missing = len(citation_validation.get("missing_chunk_keys", []))
             path_bad = len(citation_validation.get("path_mismatches", []))
             sha_bad = len(citation_validation.get("mismatched_sha", []))
+            snapshot_bad = len(citation_validation.get("not_in_snapshot_chunk_keys", []))
             record["assistant_text"] = final_text
             if second is not None:
                 record["raw_second"] = strip_thinking(second)
@@ -2953,7 +2956,8 @@ def run_ask_grounded(
             record["error_code"] = "ASK_CITATION_INVALID"
             record["error_message"] = (
                 "Citation validation failed "
-                f"(missing={missing}, path_mismatches={path_bad}, sha_mismatches={sha_bad})."
+                f"(missing={missing}, path_mismatches={path_bad}, sha_mismatches={sha_bad}, "
+                f"not_in_snapshot={snapshot_bad})."
             )
             print(
                 json.dumps(
