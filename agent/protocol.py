@@ -100,6 +100,8 @@ def try_parse_tool_call(text: str) -> Optional[ToolCallParse]:
         return None
 
     start_idx, end_idx = span
+    if text[:start_idx].strip():
+        return None
     prefix = text[start_idx : end_idx + 1]
     try:
         prefix_obj = json.loads(prefix)
