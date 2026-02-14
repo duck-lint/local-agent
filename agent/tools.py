@@ -138,7 +138,11 @@ def configure_tool_security(
             roots.append(r)
 
     if not roots:
-        raise ValueError("No valid allowed_roots. Create corpus/ runs/ scratch/ or update configs/default.yaml.")
+        raise ValueError(
+            "No valid allowed_roots. Ensure configured directories exist "
+            "(e.g., ../local-agent-workroot/allowed/ and ../local-agent-workroot/runs/) "
+            "or update configs/default.yaml."
+        )
 
     _READ_TEXT_FILE_POLICY = ReadTextFilePolicy(
         allowed_roots=roots,

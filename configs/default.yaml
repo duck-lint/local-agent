@@ -46,3 +46,16 @@ security:
   auto_create_allowed_roots: true
   roots_must_be_within_security_root: true
 workroot: "../local-agent-workroot/"
+phase2:
+  index_db_path: "index/index.sqlite"
+  sources:
+    - name: corpus
+      root: "allowed/corpus/"
+      kind: corpus
+    - name: scratch
+      root: "allowed/scratch/"
+      kind: scratch
+  chunking:
+    scheme: obsidian_v1
+    max_chars: 1200
+    overlap: 120
