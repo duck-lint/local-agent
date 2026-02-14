@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import subprocess
 import tempfile
 import unittest
 from pathlib import Path
@@ -134,6 +135,71 @@ class ReadTextFileSecurityTests(unittest.TestCase):
         with self.assertRaises(ToolError) as cm:
             _read_text_file({"path": "link.md"})
         self.assertEqual(cm.exception.code, "PATH_DENIED")
+        self.assertIn("Resolved path escapes allowed roots", str(cm.exception))
+
+    @unittest.skipUnless(os.name == "posix", "Symlink root poisoning test requires POSIX semantics")
+    def test_symlink_root_poisoning_rejected_when_containment_enabled(self) -> None:
+        outside = self.tmp_path / "outside_root"
+        outside.mkdir(parents=True, exist_ok=True)
+        poisoned = self.allowed_root / "poisoned_root"
+        os.symlink(outside, poisoned, target_is_directory=True)
+
+        with self.assertRaises(ValueError) as cm:
+            configure_tool_security(
+                {
+                    "allowed_roots": ["poisoned_root/"],
+                    "allowed_exts": [".md", ".txt", ".json"],
+                    "deny_absolute_paths": True,
+                    "deny_hidden_paths": True,
+                    "allow_any_path": False,
+                    "auto_create_allowed_roots": False,
+                    "roots_must_be_within_security_root": True,
+                },
+                workspace_root=self.allowed_root,
+            )
+        msg = str(cm.exception)
+        self.assertIn("security_root", msg)
+        self.assertIn("offending_root_lexical", msg)
+        self.assertIn("offending_root_resolved", msg)
+        self.assertIn(str(self.allowed_root.resolve()), msg)
+        self.assertIn(str(outside.resolve()), msg)
+
+    @unittest.skipUnless(os.name == "nt", "Windows junction poisoning test requires Windows")
+    def test_junction_root_poisoning_rejected_when_containment_enabled(self) -> None:
+        outside = self.tmp_path / "outside_root"
+        outside.mkdir(parents=True, exist_ok=True)
+        poisoned = self.allowed_root / "poisoned_junction"
+        proc = subprocess.run(
+            ["cmd", "/c", "mklink", "/J", str(poisoned), str(outside)],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode != 0:
+            self.skipTest(f"Unable to create junction: {proc.stderr.strip() or proc.stdout.strip()}")
+
+        try:
+            with self.assertRaises(ValueError) as cm:
+                configure_tool_security(
+                    {
+                        "allowed_roots": ["poisoned_junction/"],
+                        "allowed_exts": [".md", ".txt", ".json"],
+                        "deny_absolute_paths": True,
+                        "deny_hidden_paths": True,
+                        "allow_any_path": False,
+                        "auto_create_allowed_roots": False,
+                        "roots_must_be_within_security_root": True,
+                    },
+                    workspace_root=self.allowed_root,
+                )
+            msg = str(cm.exception)
+            self.assertIn("security_root", msg)
+            self.assertIn("offending_root_lexical", msg)
+            self.assertIn("offending_root_resolved", msg)
+            self.assertIn(str(self.allowed_root.resolve()), msg)
+            self.assertIn(str(outside.resolve()), msg)
+        finally:
+            subprocess.run(["cmd", "/c", "rmdir", str(poisoned)], capture_output=True, text=True, check=False)
 
     def test_extension_blocked(self) -> None:
         self._configure()

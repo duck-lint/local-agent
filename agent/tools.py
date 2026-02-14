@@ -112,16 +112,6 @@ def configure_tool_security(
             p = workspace / p
 
         p_abs = Path(os.path.abspath(str(p)))
-        if roots_must_be_within_security_root and not _is_within(p_abs, workspace):
-            cfg_path = (
-                str(resolved_config_path.resolve())
-                if resolved_config_path is not None
-                else "<unknown>"
-            )
-            raise ValueError(
-                "allowed_root escapes security_root "
-                f"(security_root={workspace}, offending_root={p_abs}, resolved_config_path={cfg_path})"
-            )
 
         if auto_create_allowed_roots:
             try:
@@ -133,6 +123,17 @@ def configure_tool_security(
             r = p_abs.resolve(strict=True)
         except (FileNotFoundError, OSError):
             continue
+        if roots_must_be_within_security_root and not _is_within(r, workspace):
+            cfg_path = (
+                str(resolved_config_path.resolve())
+                if resolved_config_path is not None
+                else "<unknown>"
+            )
+            raise ValueError(
+                "allowed_root escapes security_root "
+                f"(security_root={workspace}, offending_root_lexical={p_abs}, "
+                f"offending_root_resolved={r}, resolved_config_path={cfg_path})"
+            )
         if r.exists() and r.is_dir():
             roots.append(r)
 
@@ -146,6 +147,14 @@ def configure_tool_security(
         deny_hidden_paths=bool(raw.get("deny_hidden_paths", True)),
         allow_any_path=bool(raw.get("allow_any_path", False)),
     )
+
+
+def get_read_text_file_policy() -> ReadTextFilePolicy:
+    return _READ_TEXT_FILE_POLICY
+
+
+def get_workspace_root() -> Path:
+    return _WORKSPACE_ROOT
 
 
 def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Path:
@@ -182,6 +191,7 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
             raise ToolError("PATH_DENIED", f"Invalid path: {requested}") from exc
 
         file_missing_inside_root = False
+        escape_seen = False
         for base_resolved in resolved_roots:
             if not _is_within(candidate_abs, base_resolved):
                 continue
@@ -206,10 +216,13 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
                 file_missing_inside_root = True
                 continue
             if not _is_within(candidate, base_resolved):
+                escape_seen = True
                 continue
 
             return _validate_existing_file(candidate)
 
+        if escape_seen:
+            raise ToolError("PATH_DENIED", "Resolved path escapes allowed roots.")
         if file_missing_inside_root:
             raise ToolError("FILE_NOT_FOUND", f"File does not exist under allowed roots: {requested}")
         raise ToolError("PATH_DENIED", f"Path escapes allowed roots or is denied by policy: {requested}")
@@ -217,6 +230,7 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
     # Bare filename mode: search each allowed root and detect ambiguous matches.
     file_missing_inside_root = False
     lexical_containment_seen = False
+    escape_seen = False
     matches: list[Path] = []
     for base_resolved in resolved_roots:
         tentative = base_resolved / requested_path
@@ -250,6 +264,7 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
             file_missing_inside_root = True
             continue
         if not _is_within(candidate, base_resolved):
+            escape_seen = True
             continue
 
         matches.append(_validate_existing_file(candidate))
@@ -260,6 +275,8 @@ def resolve_and_validate_path(requested: str, policy: ReadTextFilePolicy) -> Pat
     if len(unique_matches) > 1:
         listed = ", ".join(str(p) for p in unique_matches)
         raise ToolError("AMBIGUOUS_PATH", f"Multiple matches for '{requested}': {listed}")
+    if escape_seen:
+        raise ToolError("PATH_DENIED", "Resolved path escapes allowed roots.")
     if file_missing_inside_root or lexical_containment_seen:
         raise ToolError("FILE_NOT_FOUND", f"File does not exist under allowed roots: {requested}")
     raise ToolError("PATH_DENIED", f"Path escapes allowed roots or is denied by policy: {requested}")
