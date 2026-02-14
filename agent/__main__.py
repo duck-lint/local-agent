@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
+from agent.index_db import connect_db, init_db, query_chunks_lexical
+from agent.indexer import index_sources, parse_sources_from_config
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.tools import TOOLS, ToolError, configure_tool_security
 
@@ -45,6 +47,18 @@ DEFAULT_CONFIG: Dict[str, Any] = {
         "allow_any_path": False,
         "auto_create_allowed_roots": True,
         "roots_must_be_within_security_root": True,
+    },
+    "phase2": {
+        "index_db_path": "index/index.sqlite",
+        "sources": [
+            {"name": "corpus", "root": "allowed/corpus/", "kind": "corpus"},
+            {"name": "scratch", "root": "allowed/scratch/", "kind": "scratch"},
+        ],
+        "chunking": {
+            "scheme": "obsidian_v1",
+            "max_chars": 1200,
+            "overlap": 120,
+        },
     },
 }
 
@@ -80,6 +94,28 @@ def load_config_with_path(
 
 def load_config() -> Dict[str, Any]:
     return load_config_with_path()[0]
+
+
+def deep_merge_config(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
+    out: Dict[str, Any] = {}
+    for k, v in base.items():
+        if isinstance(v, dict):
+            out[k] = deep_merge_config(v, {})
+        elif isinstance(v, list):
+            out[k] = list(v)
+        else:
+            out[k] = v
+
+    for k, v in override.items():
+        if isinstance(v, dict) and isinstance(out.get(k), dict):
+            out[k] = deep_merge_config(out[k], v)  # type: ignore[arg-type]
+        elif isinstance(v, dict):
+            out[k] = deep_merge_config({}, v)
+        elif isinstance(v, list):
+            out[k] = list(v)
+        else:
+            out[k] = v
+    return out
 
 
 def config_root_from_config_path(config_path: Optional[Path]) -> Optional[Path]:
@@ -152,6 +188,173 @@ def root_log_fields(roots: Dict[str, Optional[Path]]) -> Dict[str, Optional[str]
         "workroot": _path_to_str(roots.get("workroot")),
         "security_root": _path_to_str(roots.get("security_root")),
     }
+
+
+def _build_phase2_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    defaults = DEFAULT_CONFIG.get("phase2", {})
+    out: Dict[str, Any] = {
+        "index_db_path": defaults.get("index_db_path", "index/index.sqlite"),
+        "sources": defaults.get("sources", []),
+        "chunking": dict(defaults.get("chunking", {})),
+    }
+    raw = cfg.get("phase2")
+    if not isinstance(raw, dict):
+        return out
+
+    if "index_db_path" in raw:
+        out["index_db_path"] = raw.get("index_db_path")
+    if "sources" in raw:
+        out["sources"] = raw.get("sources")
+
+    raw_chunking = raw.get("chunking")
+    if isinstance(raw_chunking, dict):
+        chunking = dict(out.get("chunking", {}))
+        chunking.update(raw_chunking)
+        out["chunking"] = chunking
+    return out
+
+
+def _resolve_phase2_db_path(phase2_cfg: Dict[str, Any], security_root: Path) -> Path:
+    raw = _string_config_value(phase2_cfg.get("index_db_path")) or "index/index.sqlite"
+    p = Path(raw).expanduser()
+    if not p.is_absolute():
+        p = security_root / p
+    return p.resolve()
+
+
+def _chunking_cfg_from_phase2(phase2_cfg: Dict[str, Any]) -> Tuple[str, int, int]:
+    raw_chunking = phase2_cfg.get("chunking")
+    chunking = raw_chunking if isinstance(raw_chunking, dict) else {}
+    scheme = _string_config_value(chunking.get("scheme")) or "obsidian_v1"
+    if scheme not in {"obsidian_v1", "fixed_window_v1"}:
+        raise ValueError("phase2.chunking.scheme must be one of: obsidian_v1, fixed_window_v1")
+    max_chars = _as_int(chunking.get("max_chars"), 1200)
+    overlap = _as_int(chunking.get("overlap"), 120)
+    if max_chars <= 0:
+        raise ValueError("phase2.chunking.max_chars must be > 0")
+    if overlap < 0:
+        raise ValueError("phase2.chunking.overlap must be >= 0")
+    if overlap >= max_chars:
+        raise ValueError("phase2.chunking.overlap must be smaller than max_chars")
+    return scheme, max_chars, overlap
+
+
+def _phase2_cfg_with_index_overrides(
+    phase2_cfg: Dict[str, Any],
+    *,
+    db_path_override: Optional[str] = None,
+    scheme_override: Optional[str] = None,
+    max_chars_override: Optional[int] = None,
+    overlap_override: Optional[int] = None,
+) -> Dict[str, Any]:
+    out = dict(phase2_cfg)
+    if db_path_override is not None:
+        out["index_db_path"] = db_path_override
+
+    chunking_raw = out.get("chunking")
+    chunking = dict(chunking_raw) if isinstance(chunking_raw, dict) else {}
+    if scheme_override is not None:
+        chunking["scheme"] = scheme_override
+    if max_chars_override is not None:
+        chunking["max_chars"] = max_chars_override
+    if overlap_override is not None:
+        chunking["overlap"] = overlap_override
+    out["chunking"] = chunking
+    return out
+
+
+def _filter_sources_by_name(source_specs: List[Any], selected_names: Optional[List[str]]) -> List[Any]:
+    if not selected_names:
+        return list(source_specs)
+    requested = {name.strip() for name in selected_names if name and name.strip()}
+    if not requested:
+        return list(source_specs)
+
+    available = {spec.name for spec in source_specs}
+    missing = sorted(requested - available)
+    if missing:
+        raise ValueError(
+            "Unknown source name(s): "
+            + ", ".join(missing)
+            + ". Use `agent index --list-sources` to inspect configured sources."
+        )
+    return [spec for spec in source_specs if spec.name in requested]
+
+
+def _render_flag(value: Any) -> str:
+    if value is None:
+        return "unknown"
+    if value in (0, 1):
+        return str(value)
+    return str(value)
+
+
+def _metadata_state(yaml_present: Any, yaml_parse_ok: Any) -> str:
+    if yaml_present == 0:
+        return "absent"
+    if yaml_present == 1 and yaml_parse_ok == 1:
+        return "present"
+    return "unknown"
+
+
+def _snippet_around(text: str, query_text: str, width: int = 180) -> str:
+    if not text:
+        return ""
+    q = query_text.lower()
+    source = text
+    lower = source.lower()
+    idx = lower.find(q) if q else -1
+    if idx < 0:
+        snippet = source[:width]
+        return snippet + ("..." if len(source) > width else "")
+    start = max(0, idx - 60)
+    end = min(len(source), idx + max(len(query_text), 1) + 120)
+    snippet = source[start:end]
+    if start > 0:
+        snippet = "..." + snippet
+    if end < len(source):
+        snippet = snippet + "..."
+    return snippet
+
+
+def render_query_results(rows: List[Dict[str, Any]], query_text: str) -> str:
+    if not rows:
+        return "No matches found in index."
+
+    lines: List[str] = []
+    for i, row in enumerate(rows, start=1):
+        source_name = str(row.get("source_name", "unknown"))
+        source_kind = str(row.get("source_kind", "unknown"))
+        rel_path = str(row.get("rel_path", "unknown"))
+        scheme = str(row.get("scheme", "unknown"))
+        heading_path = row.get("heading_path")
+        yaml_present = row.get("yaml_present")
+        yaml_parse_ok = row.get("yaml_parse_ok")
+        required = row.get("required_keys_present")
+        metadata_state = _metadata_state(yaml_present, yaml_parse_ok)
+        snippet = _snippet_around(str(row.get("chunk_text", "")), query_text)
+
+        lines.append(f"[{i}] {source_name}:{rel_path}")
+        lines.append(f"provenance: source={source_name} kind={source_kind}")
+        lines.append(f"chunk: scheme={scheme}")
+        if isinstance(heading_path, str) and heading_path.strip():
+            lines.append(f"heading_path: {heading_path.strip()}")
+        lines.append(
+            "typed: "
+            f"metadata={metadata_state}; "
+            f"yaml_present={_render_flag(yaml_present)}; "
+            f"yaml_parse_ok={_render_flag(yaml_parse_ok)}; "
+            f"required_keys_present={_render_flag(required)}"
+        )
+        yaml_error = row.get("yaml_error")
+        if metadata_state == "unknown" and isinstance(yaml_error, str) and yaml_error.strip():
+            lines.append(f"yaml_error: {yaml_error.strip()}")
+        lines.append(f"snippet: {snippet}")
+        lines.append("")
+
+    while lines and lines[-1] == "":
+        lines.pop()
+    return "\n".join(lines)
 
 
 def select_reread_path(original_tool_args: Dict[str, Any], evidence_obj: Dict[str, Any]) -> str:
@@ -1101,6 +1304,176 @@ def run_ask_one_tool(
     return return_code
 
 
+def run_index(
+    cfg: Dict[str, Any],
+    *,
+    db_path_override: Optional[str] = None,
+    scheme_override: Optional[str] = None,
+    max_chars_override: Optional[int] = None,
+    overlap_override: Optional[int] = None,
+    force_rebuild: bool = False,
+    source_names: Optional[List[str]] = None,
+    list_sources: bool = False,
+    json_output: bool = False,
+    allow_partial: bool = False,
+    resolved_config_path: Optional[Path] = None,
+    roots: Optional[Dict[str, Optional[Path]]] = None,
+) -> int:
+    runtime_roots = roots or resolve_runtime_roots(
+        resolved_config_path=resolved_config_path,
+        cfg=cfg,
+        cli_workroot=None,
+    )
+    security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
+    phase2_cfg = _phase2_cfg_with_index_overrides(
+        _build_phase2_cfg(cfg),
+        db_path_override=db_path_override,
+        scheme_override=scheme_override,
+        max_chars_override=max_chars_override,
+        overlap_override=overlap_override,
+    )
+
+    try:
+        all_source_specs = parse_sources_from_config(phase2_cfg)
+        source_specs = _filter_sources_by_name(all_source_specs, source_names)
+        if not source_specs:
+            raise ValueError("No sources selected for indexing.")
+
+        if list_sources:
+            if json_output:
+                payload = {
+                    "ok": True,
+                    "sources": [
+                        {"name": spec.name, "root": spec.root, "kind": spec.kind}
+                        for spec in source_specs
+                    ],
+                    "selected_count": len(source_specs),
+                    "resolved_config_path": _path_to_str(resolved_config_path),
+                }
+                payload.update(root_log_fields(runtime_roots))
+                print_output(json.dumps(payload, ensure_ascii=False))
+            else:
+                print_output("Configured Phase 2 sources:")
+                for spec in source_specs:
+                    print_output(f"- {spec.name} (kind={spec.kind}, root={spec.root})")
+            return 0
+
+        scheme, max_chars, overlap = _chunking_cfg_from_phase2(phase2_cfg)
+        db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
+        summary = index_sources(
+            db_path=db_path,
+            source_specs=source_specs,
+            security_root=security_root,
+            scheme=scheme,
+            max_chars=max_chars,
+            overlap=overlap,
+            force_rebuild=force_rebuild,
+        )
+    except Exception as exc:
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "error_code": "PHASE2_INDEX_ERROR",
+            "error_message": str(exc),
+            "resolved_config_path": _path_to_str(resolved_config_path),
+        }
+        payload.update(root_log_fields(runtime_roots))
+        print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+    if json_output:
+        payload = {
+            "ok": len(summary.errors) == 0 or bool(allow_partial),
+            "index_db": str(db_path),
+            "scheme": scheme,
+            "sources_selected": [spec.name for spec in source_specs],
+            "sources_count": summary.sources_total,
+            "docs_scanned": summary.docs_scanned,
+            "docs_changed": summary.docs_changed,
+            "docs_unchanged": summary.docs_unchanged,
+            "docs_pruned": summary.docs_pruned,
+            "chunks_written": summary.chunks_written,
+            "total_docs": summary.total_docs,
+            "total_chunks": summary.total_chunks,
+            "errors_count": len(summary.errors),
+            "errors": list(summary.errors),
+            "resolved_config_path": _path_to_str(resolved_config_path),
+        }
+        payload.update(root_log_fields(runtime_roots))
+        print_output(json.dumps(payload, ensure_ascii=False))
+    else:
+        print_output(f"index_db: {db_path}")
+        print_output(
+            "index summary: "
+            f"scheme={scheme}, "
+            f"sources={summary.sources_total}, "
+            f"docs_scanned={summary.docs_scanned}, "
+            f"docs_changed={summary.docs_changed}, "
+            f"docs_unchanged={summary.docs_unchanged}, "
+            f"docs_pruned={summary.docs_pruned}, "
+            f"chunks_written={summary.chunks_written}, "
+            f"total_docs={summary.total_docs}, "
+            f"total_chunks={summary.total_chunks}, "
+            f"errors={len(summary.errors)}"
+        )
+    if summary.errors:
+        if not json_output:
+            for err in summary.errors:
+                print_output(f"error: {err}")
+        return 0 if allow_partial else 1
+    return 0
+
+
+def run_query(
+    cfg: Dict[str, Any],
+    query_text: str,
+    *,
+    limit: int = 5,
+    resolved_config_path: Optional[Path] = None,
+    roots: Optional[Dict[str, Optional[Path]]] = None,
+) -> int:
+    runtime_roots = roots or resolve_runtime_roots(
+        resolved_config_path=resolved_config_path,
+        cfg=cfg,
+        cli_workroot=None,
+    )
+    security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
+    phase2_cfg = _build_phase2_cfg(cfg)
+
+    if not query_text.strip():
+        print(
+            json.dumps(
+                {
+                    "ok": False,
+                    "error_code": "INVALID_QUERY",
+                    "error_message": "Query text must be non-empty.",
+                },
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
+    try:
+        db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
+        init_db(db_path)
+        with connect_db(db_path) as conn:
+            rows = query_chunks_lexical(conn, query_text=query_text, limit=limit)
+    except Exception as exc:
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "error_code": "PHASE2_QUERY_ERROR",
+            "error_message": str(exc),
+            "resolved_config_path": _path_to_str(resolved_config_path),
+        }
+        payload.update(root_log_fields(runtime_roots))
+        print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
+        return 1
+
+    rendered = render_query_results([dict(row) for row in rows], query_text=query_text)
+    print_output(rendered)
+    return 0
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(prog="agent")
     parser.add_argument(
@@ -1121,6 +1494,71 @@ def main() -> int:
     ask_speed_group.add_argument("--fast", action="store_true", help="Force fast model for both ask calls.")
     p_ask.add_argument("--full", action="store_true", help="Deprecated no-op (full evidence is default).")
 
+    p_index = sub.add_parser(
+        "index",
+        help="Build/update the Phase 2 markdown index.",
+        description=(
+            "Build or update the Phase 2 markdown index.\n"
+            "Defaults come from configs/default.yaml under phase2.* and can be overridden via flags."
+        ),
+        formatter_class=argparse.ArgumentDefaultsHelpFormatter,
+    )
+    p_index.add_argument(
+        "--db-path",
+        type=str,
+        default=None,
+        help="Override phase2.index_db_path for this run.",
+    )
+    p_index.add_argument(
+        "--scheme",
+        type=str,
+        choices=["obsidian_v1", "fixed_window_v1"],
+        default=None,
+        help="Override chunking scheme for this run.",
+    )
+    p_index.add_argument(
+        "--max-chars",
+        type=int,
+        default=None,
+        help="Override chunking max_chars for this run.",
+    )
+    p_index.add_argument(
+        "--overlap",
+        type=int,
+        default=None,
+        help="Override chunking overlap for this run.",
+    )
+    p_index.add_argument(
+        "--source",
+        action="append",
+        default=None,
+        help="Index only specific source name(s). Repeat flag to include multiple sources.",
+    )
+    p_index.add_argument(
+        "--list-sources",
+        action="store_true",
+        help="Print configured sources (after optional --source filtering) and exit.",
+    )
+    p_index.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable JSON summary.",
+    )
+    p_index.add_argument(
+        "--allow-partial",
+        action="store_true",
+        help="Exit 0 even if some files fail indexing.",
+    )
+    p_index.add_argument(
+        "--rebuild",
+        action="store_true",
+        help="Force rechunking of all indexed docs, even when source file hashes are unchanged.",
+    )
+
+    p_query = sub.add_parser("query", help="Lexically query Phase 2 indexed chunks.")
+    p_query.add_argument("text", type=str, help="Query text.")
+    p_query.add_argument("--limit", type=int, default=5, help="Maximum number of results.")
+
     args = parser.parse_args()
     loaded_cfg_path: Optional[Path] = None
     cfg = dict(DEFAULT_CONFIG)
@@ -1131,7 +1569,7 @@ def main() -> int:
     )
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
-        cfg = {**DEFAULT_CONFIG, **loaded_cfg}
+        cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,
@@ -1174,6 +1612,29 @@ def main() -> int:
             force_big_second=bool(getattr(args, "big", False)),
             force_fast=bool(getattr(args, "fast", False)),
             force_full=bool(getattr(args, "full", False)),
+            resolved_config_path=loaded_cfg_path,
+            roots=roots,
+        )
+    if args.cmd == "index":
+        return run_index(
+            cfg,
+            db_path_override=getattr(args, "db_path", None),
+            scheme_override=getattr(args, "scheme", None),
+            max_chars_override=getattr(args, "max_chars", None),
+            overlap_override=getattr(args, "overlap", None),
+            force_rebuild=bool(getattr(args, "rebuild", False)),
+            source_names=getattr(args, "source", None),
+            list_sources=bool(getattr(args, "list_sources", False)),
+            json_output=bool(getattr(args, "json", False)),
+            allow_partial=bool(getattr(args, "allow_partial", False)),
+            resolved_config_path=loaded_cfg_path,
+            roots=roots,
+        )
+    if args.cmd == "query":
+        return run_query(
+            cfg,
+            args.text,
+            limit=int(getattr(args, "limit", 5)),
             resolved_config_path=loaded_cfg_path,
             roots=roots,
         )
