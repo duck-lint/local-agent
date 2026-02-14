@@ -281,9 +281,8 @@ Split repo/workroot setup (no workroot config required):
 Ensure allowlisted dirs exist (or keep `auto_create_allowed_roots: true`):
 
 ```text
-corpus/
+allowed/
 runs/
-scratch/
 ```
 
 Smoke test:
@@ -302,8 +301,11 @@ Basic:
 ```bash
 python -m agent chat "<prompt>"
 python -m agent ask "<question>"
+python -m agent doctor
+python -m agent doctor --no-ollama
 local-agent chat "<prompt>"
 local-agent ask "<question>"
+local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "<question>"
 ```
 
@@ -352,6 +354,8 @@ Commands:
 local-agent index
 local-agent index --rebuild
 local-agent query "coherence" --limit 5
+local-agent doctor
+local-agent doctor --no-ollama
 ```
 
 Phase 2 intentionally does not include embeddings, vector memory, or chat memory. Those are deferred to Phase 3.
@@ -382,7 +386,7 @@ Security (`security:`):
 
 Current defaults in this repo are intentionally conservative:
 - only `.md`, `.txt`, `.json` reads
-- roots limited to `corpus/`, `runs/`, `scratch/`
+- roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
 - absolute/hidden path denial enabled
 
 ## Error codes and troubleshooting
@@ -412,6 +416,12 @@ Frequent codes and first checks:
   - model violated answer-only phase
 - `SECOND_PASS_FORMAT_VIOLATION`
   - output still violated format after one retry
+- `DOCTOR_INDEX_DB_MISSING`
+  - preflight found no index DB at configured `phase2.index_db_path`
+  - run `python -m agent index --rebuild --json`
+- `DOCTOR_CHUNKER_SIG_MISMATCH`
+  - preflight found stale chunking fingerprint vs configured phase2 chunking
+  - run `python -m agent index --scheme obsidian_v1 --rebuild --json` (or your configured scheme)
 
 Debug tip:
 - open latest `runs/<run_id>/run.json`
@@ -423,7 +433,7 @@ Debug tip:
 Run unit tests:
 
 ```bash
-python -m unittest -v tests.test_tools_security
+python -m unittest discover -s tests -v
 ```
 
 Coverage includes:
@@ -439,6 +449,28 @@ Coverage includes:
 
 Manual security checklist:
 - see `SECURITY.md`
+
+Doctor tip:
+- use `python -m agent doctor --no-ollama` for offline preflight when Ollama is intentionally not running.
+
+## Release zip
+
+Create a clean, shareable zip (without `.venv/`, `.git/`, caches, or run logs):
+
+```bash
+python scripts/make_release_zip.py
+python scripts/make_release_zip.py --dry-run
+python scripts/make_release_zip.py --include-workroot
+```
+
+`--include-workroot` adds only a curated subset (`local-agent-workroot` top-level boot/docs files plus `allowed/.gitkeep` and `allowed/sample/**` when present), and always excludes `local-agent-workroot/runs/**`.
+
+Optional local cleanup helper:
+
+```bash
+python scripts/clean_artifacts.py --dry-run
+python scripts/clean_artifacts.py
+```
 
 ## Extending safely
 

@@ -39,14 +39,18 @@ Windows:
 ```bash
 .\.venv\Scripts\python.exe -m agent chat "ping"
 .\.venv\Scripts\python.exe -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+.\.venv\Scripts\python.exe -m agent doctor
 ```
 
 Cross-platform:
 ```bash
 python -m agent chat "ping"
 python -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+python -m agent doctor
+python -m agent doctor --no-ollama
 local-agent chat "ping"
 local-agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
+local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
 ```
 
@@ -59,6 +63,14 @@ local-agent ask --fast "Read allowed/corpus/secret.md and summarize it."
 local-agent ask --big "Read allowed/corpus/secret.md and give a thorough synthesis."
 local-agent ask --full "Read allowed/corpus/secret.md and summarize it."
 ```
+
+Clean release zip:
+```bash
+python scripts/make_release_zip.py
+python scripts/make_release_zip.py --dry-run
+python scripts/make_release_zip.py --include-workroot
+```
+`--include-workroot` is curated (top-level boot/docs + sample allowed payload) and excludes `local-agent-workroot/runs/**`.
 
 ## 3) File path behavior (important)
 
@@ -111,6 +123,12 @@ Check these fields in order:
 - `SECOND_PASS_FORMAT_VIOLATION`
   - answer formatting still invalid after retry
   - simplify prompt or reduce requested output scope
+- `DOCTOR_INDEX_DB_MISSING`
+  - preflight found no index DB at configured path
+  - run `python -m agent index --rebuild --json`
+- `DOCTOR_CHUNKER_SIG_MISMATCH`
+  - preflight found stale chunking fingerprint vs current config
+  - run `python -m agent index --scheme obsidian_v1 --rebuild --json` (or your configured scheme)
 
 ## 6) Security sanity checks
 
@@ -138,3 +156,4 @@ python -m agent ask "Read dupe.md and summarize it."
 3. If evidence fails, check `evidence_status` and truncation fields.
 4. If answer fails, inspect second-pass violations/retry metadata.
 5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
+   For offline preflight, use `python -m agent doctor --no-ollama`.
