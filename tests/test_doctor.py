@@ -140,6 +140,38 @@ class DoctorChecksTests(unittest.TestCase):
         failure_codes = {c.error_code for c in checks if not c.ok}
         self.assertIn("DOCTOR_CHUNK_SCHEME_MISMATCH", failure_codes)
 
+    def test_collect_doctor_checks_detects_blank_scheme(self) -> None:
+        with connect_db(self.db_path) as conn:
+            conn.execute(
+                "UPDATE chunks SET scheme = '   ' WHERE id IN (SELECT id FROM chunks ORDER BY id LIMIT 1)"
+            )
+            conn.commit()
+
+        checks = collect_doctor_checks(
+            deep_merge_config({}, self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+        )
+        failure_codes = {c.error_code for c in checks if not c.ok}
+        self.assertIn("DOCTOR_CHUNK_SCHEME_MISMATCH", failure_codes)
+
+    def test_collect_doctor_checks_detects_docs_without_chunks(self) -> None:
+        with connect_db(self.db_path) as conn:
+            row = conn.execute("SELECT id FROM docs ORDER BY rel_path LIMIT 1").fetchone()
+            self.assertIsNotNone(row)
+            conn.execute("DELETE FROM chunks WHERE doc_id = ?", (int(row["id"]),))
+            conn.commit()
+
+        checks = collect_doctor_checks(
+            deep_merge_config({}, self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+        )
+        failure_codes = {c.error_code for c in checks if not c.ok}
+        self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS", failure_codes)
+
     def test_collect_doctor_checks_detects_chunker_sig_mismatch(self) -> None:
         with connect_db(self.db_path) as conn:
             conn.execute(
