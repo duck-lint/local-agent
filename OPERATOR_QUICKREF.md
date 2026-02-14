@@ -28,9 +28,9 @@ pip install -e .
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
 ```text
-corpus/
+allowed/corpus/
+allowed/scratch/
 runs/
-scratch/
 ```
 
 ## 2) Most-used commands
@@ -38,35 +38,35 @@ scratch/
 Windows:
 ```bash
 .\.venv\Scripts\python.exe -m agent chat "ping"
-.\.venv\Scripts\python.exe -m agent ask "Read secret.md and summarize it in 5 bullets."
+.\.venv\Scripts\python.exe -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
 ```
 
 Cross-platform:
 ```bash
 python -m agent chat "ping"
-python -m agent ask "Read secret.md and summarize it in 5 bullets."
+python -m agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
 local-agent chat "ping"
-local-agent ask "Read secret.md and summarize it in 5 bullets."
+local-agent ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
 local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it in 5 bullets."
 ```
 
 Model routing flags:
 ```bash
-python -m agent ask --fast "Read secret.md and summarize it."
-python -m agent ask --big "Read secret.md and give a thorough synthesis."
-python -m agent ask --full "Read secret.md and summarize it."
-local-agent ask --fast "Read secret.md and summarize it."
-local-agent ask --big "Read secret.md and give a thorough synthesis."
-local-agent ask --full "Read secret.md and summarize it."
+python -m agent ask --fast "Read allowed/corpus/secret.md and summarize it."
+python -m agent ask --big "Read allowed/corpus/secret.md and give a thorough synthesis."
+python -m agent ask --full "Read allowed/corpus/secret.md and summarize it."
+local-agent ask --fast "Read allowed/corpus/secret.md and summarize it."
+local-agent ask --big "Read allowed/corpus/secret.md and give a thorough synthesis."
+local-agent ask --full "Read allowed/corpus/secret.md and summarize it."
 ```
 
 ## 3) File path behavior (important)
 
-- Bare filename (`secret.md`):
+- Bare filename (`note.md`):
   - searched across allowlisted roots
   - one hit = success
   - multiple hits = `AMBIGUOUS_PATH`
-- Explicit subpath (`corpus/secret.md`):
+- Explicit subpath (`allowed/corpus/secret.md`):
   - resolved relative to `security_root` (which equals `workroot` when provided)
   - still must remain inside allowlisted roots
 - Absolute paths are denied by default.
@@ -101,7 +101,7 @@ Check these fields in order:
   - verify path relative to `security_root` and allowlisted roots
 - `AMBIGUOUS_PATH`
   - duplicate filename across roots
-  - use explicit subpath (`corpus/...`)
+  - use explicit subpath (`allowed/corpus/...`)
 - `EVIDENCE_NOT_ACQUIRED`
   - tool call not acquired though required by question
   - re-run with explicit "Read <file>" phrasing
@@ -116,14 +116,14 @@ Check these fields in order:
 
 Expected success:
 ```bash
-python -m agent ask "Read secret.md and summarize it."
-python -m agent ask "Read corpus/secret.md and summarize it."
+python -m agent ask "Read allowed/corpus/secret.md and summarize it."
+python -m agent ask "Read allowed/corpus/secret.md and list key claims."
 ```
 
 Expected denial:
 ```bash
 python -m agent ask "Read ../../etc/passwd and summarize it."
-python -m agent ask "Read corpus/.env and summarize it."
+python -m agent ask "Read allowed/corpus/.env and summarize it."
 ```
 
 Expected ambiguity:

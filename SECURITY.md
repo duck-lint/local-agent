@@ -4,13 +4,14 @@ The `read_text_file` tool is sandboxed by `security` config in `configs/default.
 
 ## Policy notes
 
-- `allowed_roots` are relative to the workspace (`Path.cwd()`) unless absolute paths are provided.
+- `allowed_roots` are resolved relative to `security_root` (runtime workspace anchor) unless absolute paths are provided.
 - `".corpus"` is a literal hidden directory name. Use `"corpus/"` or `"./corpus/"` unless you intentionally created a folder named `.corpus`.
 - `auto_create_allowed_roots`:
   - `true`: missing allowlisted roots are created at startup.
   - `false`: missing roots are ignored.
 - `roots_must_be_within_security_root`:
-  - `true`: any root outside the workspace is rejected.
+  - `true`: any root whose resolved path escapes `security_root` is rejected.
+  - containment checks are enforced on resolved paths (symlink/junction safe).
 - If no valid roots remain after validation, startup fails with:
   - `{"ok": false, "error_code": "CONFIG_ERROR", ...}`
 
@@ -18,14 +19,14 @@ Bare filenames are searched across allowed_roots in order; use an explicit subpa
 ## Manual checks
 
 1. Allowed read by bare filename (searched within allowlisted roots):
-`python -m agent ask "Read secret.md and summarize it."`
-Place the file at `corpus/secret.md` (or another allowlisted root).
+`python -m agent ask "Read allowed/corpus/secret.md and summarize it."`
+Place the file at `allowed/corpus/secret.md` (or another allowlisted root).
 
-2. Allowed read by explicit subpath (workspace-relative, still sandboxed):
-`python -m agent ask "Read corpus/secret.md and summarize it."`
+2. Allowed read by explicit subpath (`security_root`-relative, still sandboxed):
+`python -m agent ask "Read allowed/corpus/secret.md and summarize it."`
 
 3. Ambiguous bare filename denial:
-Put `dupe.md` in two allowlisted roots (for example `corpus/dupe.md` and `scratch/dupe.md`), then run:
+Put `dupe.md` in two allowlisted roots (for example `allowed/corpus/dupe.md` and `allowed/scratch/dupe.md`), then run:
 `python -m agent ask "Read dupe.md and summarize it."`
 Expected: typed failure with `error_code` `AMBIGUOUS_PATH`. Use explicit subpath to disambiguate.
 

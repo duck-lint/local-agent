@@ -22,6 +22,7 @@ Quick operator runbook: [`OPERATOR_QUICKREF.md`](OPERATOR_QUICKREF.md)
 - Run logging and auditability
 - Setup and quickstart
 - CLI usage and recipes
+- Phase 2 indexing and query
 - Configuration reference
 - Error codes and troubleshooting
 - Testing and verification
@@ -167,13 +168,14 @@ Path request styles:
 - None -> `FILE_NOT_FOUND` (if search path was valid but file missing)
 
 2. Explicit subpath (contains slash/backslash)
-- Example: `corpus/project/note.md`
-- Treated as workspace-root relative
+- Example: `allowed/corpus/project/note.md`
+- Treated as `security_root`-relative (same anchor as `workroot` when configured)
 - Must still fall within an allowlisted root
 
 Additional protections:
 - lexical containment checks before existence checks
 - strict resolve checks for existing paths (symlink escape defense)
+- allowlisted roots are validated after `resolve(strict=True)` when containment is enabled
 - extension and hidden-path checks before content read
 
 ## Model routing and budget behavior
@@ -288,8 +290,8 @@ Smoke test:
 
 ```bash
 .venv\\Scripts\\python -m agent chat "ping"
-.venv\\Scripts\\python -m agent ask "Read secret.md and summarize it."
-local-agent ask "Read secret.md and summarize it."
+.venv\\Scripts\\python -m agent ask "Read allowed/corpus/secret.md and summarize it."
+local-agent ask "Read allowed/corpus/secret.md and summarize it."
 local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it."
 ```
 
@@ -312,23 +314,47 @@ local-agent --workroot ../local-agent-workroot ask "<question>"
 
 Common patterns:
 
-1. Summarize file in `corpus/` by bare filename:
+1. Summarize a file in `allowed/corpus/`:
 
 ```bash
-python -m agent ask "Read test1a.md and summarize it in 5 bullets."
+python -m agent ask "Read allowed/corpus/test1a.md and summarize it in 5 bullets."
 ```
 
 2. Disambiguate duplicate names:
 
 ```bash
-python -m agent ask "Read corpus/test1a.md and summarize it."
+python -m agent ask "Read allowed/corpus/test1a.md and summarize it."
 ```
 
 3. Request high-depth synthesis:
 
 ```bash
-python -m agent ask --big "Read corpus/test1a.md and give a thorough synthesis."
+python -m agent ask --big "Read allowed/corpus/test1a.md and give a thorough synthesis."
 ```
+
+## Phase 2 indexing and query
+
+Phase 2 introduces retrieval-ready markdown indexing with a "two sources, one index" model:
+- sources are document categories (for example `corpus` and `scratch`)
+- index is one unified SQLite DB containing documents, chunks, provenance, and typedness metadata
+
+Important behavior:
+- existing `ask` behavior is unchanged
+- no vault note YAML is modified
+- typed/untyped classification is stored in index metadata, not in note frontmatter
+- missing metadata is explicit:
+  - `metadata=absent` when frontmatter is missing
+  - `metadata=unknown` when frontmatter exists but parse/typedness is indeterminate
+
+Commands:
+
+```bash
+local-agent index
+local-agent index --rebuild
+local-agent query "coherence" --limit 5
+```
+
+Phase 2 intentionally does not include embeddings, vector memory, or chat memory. Those are deferred to Phase 3.
 
 ## Configuration reference
 
@@ -343,6 +369,7 @@ Top-level:
 - `full_evidence_triggers`
 - `temperature`
 - `ollama_base_url`
+- `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 
 Security (`security:`):
 - `allowed_roots`
@@ -402,11 +429,11 @@ python -m unittest -v tests.test_tools_security
 Coverage includes:
 - allowlisted read success
 - explicit subpath success
-- explicit subpath workspace-root anchoring (independent of process CWD)
+- explicit subpath `security_root` anchoring (independent of process CWD)
 - ambiguous bare filename rejection
 - extension and hidden path denial (including `.env`)
 - traversal/absolute path denial
-- workspace-root file rejection when not allowlisted
+- `security_root` top-level file rejection when not allowlisted
 - fail-closed misconfiguration behavior
 - symlink escape denial (POSIX test)
 
