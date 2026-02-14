@@ -83,8 +83,11 @@ phase3:
       enabled: true
       strict: true
       require_in_snapshot: true
+      heading_match: prefix
+      normalize_heading: true
 ```
 This requires citations to reference chunk keys from the run's retrieved evidence snapshot.
+`heading_match: prefix` keeps strict mode resilient to parent-heading citations (for example citing `H2` when the chunk heading is `H2 > H3`).
 If strict validation trips too often, increase `top_n` moderately (for example `8 -> 12` or `16`).
 Tradeoff: larger `top_n` increases prompt size and evidence payload, though excerpt logging caps still apply.
 

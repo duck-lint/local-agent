@@ -584,6 +584,71 @@ class Phase3AskGroundedTests(unittest.TestCase):
     @patch("agent.__main__.create_embedder")
     @patch("agent.__main__.retrieve")
     @patch("agent.__main__.ollama_chat")
+    def test_ask_strict_mode_allows_prefix_heading_match(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        key = "cccccccccccccccccccccccccccccccc"
+        rel_path = "gate.md"
+        self._insert_chunk(
+            chunk_key=key,
+            rel_path=rel_path,
+            heading_path="H2: Qualities > H3: From ChatGPT",
+            text="gate",
+        )
+        self.cfg["phase3"]["ask"]["citation_validation"]["strict"] = True
+        self.cfg["phase3"]["ask"]["citation_validation"]["require_in_snapshot"] = True
+        self.cfg["phase3"]["ask"]["citation_validation"]["heading_match"] = "prefix"
+        self.cfg["phase3"]["ask"]["citation_validation"]["normalize_heading"] = True
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=5,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path=rel_path,
+                    heading_path="H2: Qualities > H3: From ChatGPT",
+                    text="gate",
+                    score=1.0,
+                    method="both",
+                    lexical_score=1.0,
+                    vector_score=1.0,
+                )
+            ],
+        )
+        mock_chat.return_value = {"message": {"content": f"Answer [source: {rel_path}#H2: Qualities | {key}]"}}
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+        self.assertNotIn("ASK_CITATION_INVALID", err.getvalue())
+
+        record = self._latest_run_record()
+        self.assertTrue(bool(record.get("ok")))
+        validation = record["citation_validation"]
+        self.assertTrue(bool(validation["valid"]))
+        self.assertEqual(validation["path_mismatches"], [])
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
     def test_ask_non_strict_returns_answer_when_not_in_snapshot(
         self,
         mock_chat,

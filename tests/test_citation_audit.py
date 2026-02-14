@@ -206,6 +206,101 @@ class CitationAuditTests(unittest.TestCase):
         self.assertFalse(bool(enforced["valid"]))
         self.assertEqual(enforced["not_in_snapshot_chunk_keys"], [key_b])
 
+    def test_heading_normalization_allows_punctuation_variation(self) -> None:
+        key = "cccccccccccccccccccccccccccccccc"
+        sha = self._insert_chunk(
+            chunk_key=key,
+            rel_path="a.md",
+            heading_path="H1: Freeform Journaling:",
+            text="alpha text",
+        )
+        parsed = parse_citations(f"cite [source: a.md#H1: Freeform Journaling | {key}]")
+
+        exact = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            heading_match="exact",
+            normalize_heading=True,
+        )
+        self.assertTrue(bool(exact["valid"]))
+        self.assertEqual(exact["path_mismatches"], [])
+
+        prefix = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            heading_match="prefix",
+            normalize_heading=True,
+        )
+        self.assertTrue(bool(prefix["valid"]))
+
+    def test_heading_match_prefix_vs_exact(self) -> None:
+        key = "dddddddddddddddddddddddddddddddd"
+        sha = self._insert_chunk(
+            chunk_key=key,
+            rel_path="gate.md",
+            heading_path="H2: Qualities > H3: From ChatGPT",
+            text="gate text",
+        )
+        parsed = parse_citations(f"cite [source: gate.md#H2: Qualities | {key}]")
+
+        prefix = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            heading_match="prefix",
+            normalize_heading=True,
+        )
+        self.assertTrue(bool(prefix["valid"]))
+
+        exact = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            heading_match="exact",
+            normalize_heading=True,
+        )
+        self.assertFalse(bool(exact["valid"]))
+        self.assertEqual(len(exact["path_mismatches"]), 1)
+        self.assertEqual(exact["path_mismatches"][0]["heading_mismatch_reason"], "prefix")
+
+    def test_heading_match_ignore_logs_but_does_not_invalidate(self) -> None:
+        key = "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"
+        sha = self._insert_chunk(
+            chunk_key=key,
+            rel_path="gate.md",
+            heading_path="H2: Qualities > H3: From ChatGPT",
+            text="gate text",
+        )
+        parsed = parse_citations(f"cite [source: gate.md#H9: Completely Different | {key}]")
+
+        report = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            heading_match="ignore",
+            normalize_heading=True,
+        )
+        self.assertTrue(bool(report["valid"]))
+        self.assertEqual(len(report["path_mismatches"]), 1)
+        self.assertEqual(report["path_mismatches"][0]["heading_mismatch_reason"], "ignored")
+
 
 if __name__ == "__main__":
     unittest.main()
