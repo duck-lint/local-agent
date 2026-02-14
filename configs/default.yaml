@@ -88,8 +88,8 @@ phase3:
   ask:
     citation_validation:
       enabled: true
-      strict: false
-      require_in_snapshot: false
+      strict: true
+      require_in_snapshot: true
   runs:
     log_evidence_excerpts: true
     max_total_evidence_chars: 200000
