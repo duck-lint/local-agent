@@ -65,11 +65,14 @@ phase3:
     provider: "ollama"
     model_id: "nomic-embed-text-v1.5"
     preprocess: "obsidian_v1"
-    preprocess_sig: ""
+    chunk_preprocess_sig: ""
+    query_preprocess_sig: ""
     batch_size: 32
   retrieve:
     lexical_k: 20
     vector_k: 20
+    vector_fetch_k: 0
+    rel_path_prefix: ""
     fusion: "simple_union"
   memory:
     durable_db_path: "memory/durable.sqlite"

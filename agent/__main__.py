@@ -256,6 +256,7 @@ def collect_doctor_checks(
     phase2_cfg = _build_phase2_cfg(cfg)
     phase2_chunks_total = 0
     phase2_chunk_map: Dict[str, str] = {}
+    ollama_ready = False
 
     # Config path check
     if resolved_config_path is None or not resolved_config_path.exists():
@@ -608,6 +609,27 @@ def collect_doctor_checks(
                 )
             )
 
+    if check_ollama:
+        try:
+            ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+            ollama_ready = True
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_OLLAMA_OK",
+                    message=f"Ollama reachable at {cfg['ollama_base_url']}.",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_OLLAMA_UNREACHABLE",
+                    message=f"Ollama endpoint is unreachable: {exc}",
+                    suggested_fix="Start Ollama (`ollama serve`) and rerun: python -m agent doctor",
+                )
+            )
+
     phase3_summary: Dict[str, Any] = {
         "require_phase3": bool(require_phase3),
         "chunks_total": int(phase2_chunks_total),
@@ -619,6 +641,9 @@ def collect_doctor_checks(
         "memory_db_path": None,
         "memory_enabled": False,
         "dangling_memory_evidence": 0,
+        "retrieval_smoke_ran": False,
+        "retrieval_smoke_ok": False,
+        "retrieval_smoke_reason": "",
     }
     phase3_cfg = _build_phase3_cfg(cfg)
     embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, security_root)
@@ -628,12 +653,23 @@ def collect_doctor_checks(
     memory_enabled = phase3_memory_enabled(phase3_cfg)
     phase3_summary["memory_enabled"] = memory_enabled
 
+    embed_model_id = ""
+    preprocess_name = ""
+    computed_chunk_preprocess_sig = ""
+    computed_query_preprocess_sig = ""
+    embed_config_valid = False
+    embed_meta_ready = False
+    embeddings_total = 0
+    retrieve_cfg = phase3_cfg.get("retrieve") if isinstance(phase3_cfg.get("retrieve"), dict) else {}
     try:
-        provider, embed_model_id, preprocess_name, computed_preprocess_sig, _ = parse_embed_runtime(
-            phase3_cfg,
-            model_override=None,
-            batch_size_override=None,
+        provider, embed_model_id, preprocess_name, computed_chunk_preprocess_sig, computed_query_preprocess_sig, _ = (
+            parse_embed_runtime(
+                phase3_cfg,
+                model_override=None,
+                batch_size_override=None,
+            )
         )
+        embed_config_valid = True
         if provider != "ollama":
             checks.append(
                 DoctorCheckResult(
@@ -644,9 +680,6 @@ def collect_doctor_checks(
                 )
             )
     except Exception as exc:
-        embed_model_id = ""
-        preprocess_name = ""
-        computed_preprocess_sig = ""
         checks.append(
             DoctorCheckResult(
                 ok=False,
@@ -657,11 +690,7 @@ def collect_doctor_checks(
         )
 
     if not embeddings_db_path.exists():
-        code = (
-            "DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING"
-            if require_phase3
-            else "DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING_WARN"
-        )
+        code = "DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING" if require_phase3 else "DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING_WARN"
         checks.append(
             DoctorCheckResult(
                 ok=not require_phase3,
@@ -675,7 +704,8 @@ def collect_doctor_checks(
             with connect_embeddings_db(embeddings_db_path) as embed_conn:
                 version_row = embed_conn.execute("PRAGMA user_version").fetchone()
                 embed_version = int(version_row[0]) if version_row is not None else 0
-                if embed_version != 1:
+                schema_ok = embed_version == 1
+                if not schema_ok:
                     checks.append(
                         DoctorCheckResult(
                             ok=False,
@@ -684,18 +714,35 @@ def collect_doctor_checks(
                             suggested_fix="Recreate embeddings DB via: python -m agent embed --rebuild --json",
                         )
                     )
+
                 meta_rows = embed_conn.execute("SELECT key, value FROM meta").fetchall()
                 meta_map = {str(r["key"]): str(r["value"]) for r in meta_rows}
                 stored_model = meta_map.get("embed_model_id")
-                stored_preprocess_sig = meta_map.get("embed_preprocess_sig")
+                stored_chunk_sig = meta_map.get("chunk_preprocess_sig")
+                stored_query_sig = meta_map.get("query_preprocess_sig")
                 stored_dim_raw = meta_map.get("embed_dim")
+                stored_vectors_normalized = meta_map.get("vectors_normalized")
                 schema_meta = meta_map.get("schema_version")
-                if not schema_meta or not stored_model or not stored_preprocess_sig or not stored_dim_raw:
+
+                meta_ok = all(
+                    [
+                        schema_meta,
+                        stored_model,
+                        stored_chunk_sig,
+                        stored_query_sig,
+                        stored_dim_raw,
+                        stored_vectors_normalized,
+                    ]
+                )
+                if not meta_ok:
                     checks.append(
                         DoctorCheckResult(
                             ok=False,
                             error_code="DOCTOR_EMBED_META_MISSING",
-                            message="Embeddings meta is incomplete (need schema_version, embed_model_id, embed_preprocess_sig, embed_dim).",
+                            message=(
+                                "Embeddings meta is incomplete (need schema_version, embed_model_id, embed_dim, "
+                                "chunk_preprocess_sig, query_preprocess_sig, vectors_normalized)."
+                            ),
                             suggested_fix="Run: python -m agent embed --rebuild --json",
                         )
                     )
@@ -706,24 +753,59 @@ def collect_doctor_checks(
                 except ValueError:
                     stored_dim = None
 
-                if computed_preprocess_sig and stored_preprocess_sig and stored_preprocess_sig != computed_preprocess_sig:
+                if (
+                    embed_config_valid
+                    and stored_chunk_sig
+                    and stored_chunk_sig != computed_chunk_preprocess_sig
+                ):
                     checks.append(
                         DoctorCheckResult(
                             ok=False,
-                            error_code="DOCTOR_EMBED_PREPROCESS_SIG_MISMATCH",
+                            error_code="DOCTOR_EMBED_CHUNK_PREPROCESS_SIG_MISMATCH",
                             message=(
-                                "Embeddings preprocess sig mismatch "
-                                f"(stored={stored_preprocess_sig}, computed={computed_preprocess_sig})."
+                                "Embeddings chunk preprocess sig mismatch "
+                                f"(stored={stored_chunk_sig}, computed={computed_chunk_preprocess_sig})."
                             ),
                             suggested_fix="Run: python -m agent embed --rebuild --json",
                         )
                     )
+                    meta_ok = False
+
+                if (
+                    embed_config_valid
+                    and stored_query_sig
+                    and stored_query_sig != computed_query_preprocess_sig
+                ):
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_QUERY_PREPROCESS_SIG_MISMATCH",
+                            message=(
+                                "Embeddings query preprocess sig mismatch "
+                                f"(stored={stored_query_sig}, computed={computed_query_preprocess_sig})."
+                            ),
+                            suggested_fix="Run: python -m agent embed --rebuild --json",
+                        )
+                    )
+                    meta_ok = False
+
+                if stored_vectors_normalized not in {"0", "1"}:
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_VECTORS_NORMALIZED_INVALID",
+                            message=f"Embeddings meta vectors_normalized must be '0' or '1', got={stored_vectors_normalized}.",
+                            suggested_fix="Run: python -m agent embed --rebuild --json",
+                        )
+                    )
+                    meta_ok = False
+
+                embeddings_total_row = embed_conn.execute("SELECT COUNT(*) AS c FROM embeddings").fetchone()
+                embeddings_total = int(embeddings_total_row["c"]) if embeddings_total_row is not None else 0
+                phase3_summary["embeddings_total"] = embeddings_total
 
                 chunk_keys = list(phase2_chunk_map.keys())
                 rows_by_key = fetch_embeddings_map(embed_conn, chunk_keys)
-                phase3_summary["embeddings_total"] = int(
-                    embed_conn.execute("SELECT COUNT(*) AS c FROM embeddings").fetchone()["c"]
-                )
                 missing_embeddings = 0
                 outdated_embeddings = 0
                 dim_mismatch_embeddings = 0
@@ -741,11 +823,13 @@ def collect_doctor_checks(
                         chunk_sha=chunk_sha,
                         model_id=embed_model_id or str(row["model_id"]),
                         dim=expected_dim,
-                        preprocess_sig=computed_preprocess_sig or str(row["preprocess_sig"]),
+                        chunk_preprocess_sig=(
+                            computed_chunk_preprocess_sig or str(row["preprocess_sig"])
+                        ),
                     )
                     is_outdated = (
                         str(row["model_id"]) != (embed_model_id or str(row["model_id"]))
-                        or str(row["preprocess_sig"]) != (computed_preprocess_sig or str(row["preprocess_sig"]))
+                        or str(row["preprocess_sig"]) != (computed_chunk_preprocess_sig or str(row["preprocess_sig"]))
                         or row_dim != expected_dim
                         or str(row["embed_sig"]) != expected_sig
                     )
@@ -809,6 +893,7 @@ def collect_doctor_checks(
                             message="Embedding dimensions are consistent.",
                         )
                     )
+                embed_meta_ready = bool(schema_ok and meta_ok and embed_config_valid)
         except Exception as exc:
             checks.append(
                 DoctorCheckResult(
@@ -818,6 +903,79 @@ def collect_doctor_checks(
                     suggested_fix="Run: python -m agent embed --rebuild --json",
                 )
             )
+
+    if not check_ollama:
+        phase3_summary["retrieval_smoke_reason"] = "skipped_no_ollama"
+        checks.append(
+            DoctorCheckResult(
+                ok=True,
+                error_code="DOCTOR_PHASE3_RETRIEVAL_SMOKE_SKIPPED_NO_OLLAMA",
+                message="Skipped retrieval readiness smoke test because --no-ollama was requested.",
+            )
+        )
+    elif not ollama_ready:
+        phase3_summary["retrieval_smoke_reason"] = "ollama_unreachable"
+    elif embeddings_total > 0 and embed_meta_ready:
+        phase3_summary["retrieval_smoke_ran"] = True
+        try:
+            smoke_vector_k = 1
+            configured_fetch = _as_int(retrieve_cfg.get("vector_fetch_k"), 0)
+            auto_fetch = max(50, smoke_vector_k * 5)
+            smoke_fetch_k = max(10, configured_fetch if configured_fetch > 0 else auto_fetch)
+            lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
+            fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
+            smoke_embedder = create_embedder(
+                provider="ollama",
+                model_id=embed_model_id,
+                base_url=cfg["ollama_base_url"],
+                timeout_s=cfg["timeout_s"],
+            )
+            smoke = retrieve(
+                "test",
+                index_db_path=db_path,
+                embeddings_db_path=embeddings_db_path,
+                embedder=smoke_embedder,
+                embed_model_id=embed_model_id,
+                preprocess_name=preprocess_name,
+                chunk_preprocess_sig=computed_chunk_preprocess_sig,
+                query_preprocess_sig=computed_query_preprocess_sig,
+                lexical_k=lexical_k,
+                vector_k=smoke_vector_k,
+                vector_fetch_k=smoke_fetch_k,
+                rel_path_prefix="",
+                fusion=fusion,
+            )
+            if smoke.vector_candidates_postfilter <= 0:
+                raise RuntimeError("vector stage returned no candidates")
+            vector_candidate = next((c for c in smoke.candidates if c.method in {"vector", "both"}), None)
+            if vector_candidate is None:
+                raise RuntimeError("no vector candidate present in retrieval result")
+            if not (vector_candidate.score == vector_candidate.score and abs(vector_candidate.score) != float("inf")):
+                raise RuntimeError("vector candidate score is non-finite")
+            if vector_candidate.chunk_key not in phase2_chunk_map:
+                raise RuntimeError(f"retrieved chunk_key missing from phase2 index: {vector_candidate.chunk_key}")
+            phase3_summary["retrieval_smoke_ok"] = True
+            phase3_summary["retrieval_smoke_reason"] = "ok"
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_PHASE3_RETRIEVAL_READY_OK",
+                    message="Phase3 retrieval readiness smoke test passed.",
+                )
+            )
+        except Exception as exc:
+            phase3_summary["retrieval_smoke_ok"] = False
+            phase3_summary["retrieval_smoke_reason"] = str(exc)
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_PHASE3_RETRIEVAL_NOT_READY",
+                    message=f"Phase3 retrieval readiness smoke test failed: {exc}",
+                    suggested_fix="Run: python -m agent embed --rebuild --json, then rerun doctor.",
+                )
+            )
+    else:
+        phase3_summary["retrieval_smoke_reason"] = "preconditions_not_met"
 
     if not memory_enabled:
         checks.append(
@@ -887,27 +1045,6 @@ def collect_doctor_checks(
     if phase3_summary_out is not None:
         phase3_summary_out.clear()
         phase3_summary_out.update(phase3_summary)
-
-    # Ollama reachability check
-    if check_ollama:
-        try:
-            ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
-            checks.append(
-                DoctorCheckResult(
-                    ok=True,
-                    error_code="DOCTOR_OLLAMA_OK",
-                    message=f"Ollama reachable at {cfg['ollama_base_url']}.",
-                )
-            )
-        except Exception as exc:
-            checks.append(
-                DoctorCheckResult(
-                    ok=False,
-                    error_code="DOCTOR_OLLAMA_UNREACHABLE",
-                    message=f"Ollama endpoint is unreachable: {exc}",
-                    suggested_fix="Start Ollama (`ollama serve`) and rerun: python -m agent doctor",
-                )
-            )
 
     return checks
 
@@ -2321,7 +2458,9 @@ def run_embed(
             "ok": len(summary.errors) == 0,
             "embeddings_db": summary.embeddings_db_path,
             "model_id": summary.model_id,
-            "preprocess_sig": summary.preprocess_sig,
+            "chunk_preprocess_sig": summary.chunk_preprocess_sig,
+            "query_preprocess_sig": summary.query_preprocess_sig,
+            "vectors_normalized": summary.vectors_normalized,
             "dim": summary.dim,
             "total_chunks": summary.total_chunks,
             "existing_embeddings": summary.existing_embeddings,
@@ -2342,6 +2481,8 @@ def run_embed(
             "embed summary: "
             f"model_id={summary.model_id}, "
             f"dim={summary.dim}, "
+            f"chunk_preprocess_sig={summary.chunk_preprocess_sig}, "
+            f"query_preprocess_sig={summary.query_preprocess_sig}, "
             f"total_chunks={summary.total_chunks}, "
             f"existing_embeddings={summary.existing_embeddings}, "
             f"missing={summary.missing}, "
@@ -2583,8 +2724,10 @@ def run_ask_grounded(
         retrieve_cfg = phase3_cfg.get("retrieve") if isinstance(phase3_cfg.get("retrieve"), dict) else {}
         lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
         vector_k = _as_int(retrieve_cfg.get("vector_k"), 20)
+        vector_fetch_k = _as_int(retrieve_cfg.get("vector_fetch_k"), 0)
+        rel_path_prefix = _string_config_value(retrieve_cfg.get("rel_path_prefix")) or ""
         fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
-        provider, model_id, preprocess_name, _, _ = parse_embed_runtime(
+        provider, model_id, preprocess_name, chunk_preprocess_sig, query_preprocess_sig, _ = parse_embed_runtime(
             phase3_cfg,
             model_override=None,
             batch_size_override=None,
@@ -2602,8 +2745,12 @@ def run_ask_grounded(
             embedder=embedder,
             embed_model_id=model_id,
             preprocess_name=preprocess_name,
+            chunk_preprocess_sig=chunk_preprocess_sig,
+            query_preprocess_sig=query_preprocess_sig,
             lexical_k=lexical_k,
             vector_k=vector_k,
+            vector_fetch_k=vector_fetch_k,
+            rel_path_prefix=rel_path_prefix,
             fusion=fusion,
         )
 
@@ -2611,8 +2758,15 @@ def run_ask_grounded(
             "query": retrieval_result.query,
             "chunker_sig": retrieval_result.chunker_sig,
             "embed_model_id": retrieval_result.embed_model_id,
-            "preprocess_sig": retrieval_result.preprocess_sig,
+            "chunk_preprocess_sig": retrieval_result.chunk_preprocess_sig,
+            "query_preprocess_sig": retrieval_result.query_preprocess_sig,
             "embed_db_schema_version": retrieval_result.embed_db_schema_version,
+            "vector_fetch_k_used": retrieval_result.vector_fetch_k_used,
+            "vector_candidates_scored": retrieval_result.vector_candidates_scored,
+            "vector_candidates_prefilter": retrieval_result.vector_candidates_prefilter,
+            "vector_candidates_postfilter": retrieval_result.vector_candidates_postfilter,
+            "rel_path_prefix_applied": retrieval_result.rel_path_prefix_applied,
+            "vector_filter_warning": retrieval_result.vector_filter_warning,
             "candidates_count": len(retrieval_result.candidates),
             "chunk_keys": [item.chunk_key for item in retrieval_result.candidates[:20]],
         }
