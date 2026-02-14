@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+from dataclasses import dataclass
 import json
 import os
 import re
@@ -12,10 +13,10 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
-from agent.index_db import connect_db, init_db, query_chunks_lexical
+from agent.index_db import connect_db, get_meta, init_db, query_chunks_lexical
 from agent.indexer import index_sources, parse_sources_from_config
 from agent.protocol import ToolCall, try_parse_tool_call
-from agent.tools import TOOLS, ToolError, configure_tool_security
+from agent.tools import TOOLS, ToolError, configure_tool_security, get_read_text_file_policy
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -188,6 +189,345 @@ def root_log_fields(roots: Dict[str, Optional[Path]]) -> Dict[str, Optional[str]
         "workroot": _path_to_str(roots.get("workroot")),
         "security_root": _path_to_str(roots.get("security_root")),
     }
+
+
+@dataclass(frozen=True)
+class DoctorCheckResult:
+    ok: bool
+    error_code: str
+    message: str
+    suggested_fix: Optional[str] = None
+
+
+def _is_within_path(candidate: Path, base: Path) -> bool:
+    try:
+        candidate.resolve().relative_to(base.resolve())
+        return True
+    except ValueError:
+        return False
+
+
+def collect_doctor_checks(
+    cfg: Dict[str, Any],
+    *,
+    resolved_config_path: Optional[Path],
+    roots: Dict[str, Optional[Path]],
+    check_ollama: bool = True,
+) -> List[DoctorCheckResult]:
+    checks: List[DoctorCheckResult] = []
+    security_root = roots.get("security_root") or Path.cwd().resolve()
+    phase2_cfg = _build_phase2_cfg(cfg)
+
+    # Config path check
+    if resolved_config_path is None or not resolved_config_path.exists():
+        checks.append(
+            DoctorCheckResult(
+                ok=False,
+                error_code="DOCTOR_CONFIG_PATH_MISSING",
+                message="Config file was not resolved at startup (expected configs/default.yaml).",
+                suggested_fix="Create or restore configs/default.yaml, then rerun: python -m agent doctor",
+            )
+        )
+    else:
+        checks.append(
+            DoctorCheckResult(
+                ok=True,
+                error_code="DOCTOR_CONFIG_PATH_OK",
+                message=f"Config path resolved: {resolved_config_path.resolve()}",
+            )
+        )
+
+    # Security policy check
+    policy = get_read_text_file_policy()
+    allowed_roots = [p.resolve() for p in policy.allowed_roots]
+    if not allowed_roots:
+        checks.append(
+            DoctorCheckResult(
+                ok=False,
+                error_code="DOCTOR_ALLOWED_ROOTS_EMPTY",
+                message="No resolved allowed_roots are active in tool policy.",
+                suggested_fix=(
+                    "Ensure configured roots exist (for defaults: ../local-agent-workroot/allowed/ and "
+                    "../local-agent-workroot/runs/), then rerun: python -m agent doctor"
+                ),
+            )
+        )
+    else:
+        missing = [str(p) for p in allowed_roots if (not p.exists() or not p.is_dir())]
+        if missing:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_ALLOWED_ROOT_MISSING",
+                    message=f"Allowed roots are missing or not directories: {', '.join(missing)}",
+                    suggested_fix="Create missing directories, then rerun: python -m agent doctor",
+                )
+            )
+        else:
+            roots_must_be_within = _as_bool(
+                (cfg.get("security", {}) or {}).get("roots_must_be_within_security_root"),
+                True,
+            )
+            outside = [str(p) for p in allowed_roots if roots_must_be_within and (not _is_within_path(p, security_root))]
+            if outside:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_ALLOWED_ROOT_OUTSIDE_SECURITY_ROOT",
+                        message=(
+                            "Containment is enabled but some resolved allowed_roots escape security_root "
+                            f"({security_root}): {', '.join(outside)}"
+                        ),
+                        suggested_fix=(
+                            "Set security.allowed_roots to paths inside security_root or disable containment only if "
+                            "intended, then rerun: python -m agent doctor"
+                        ),
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_SECURITY_POLICY_OK",
+                        message=f"Security policy active with {len(allowed_roots)} resolved allowed_roots.",
+                    )
+                )
+
+    # Phase2 config and sources check
+    source_specs: List[Any] = []
+    expected_scheme = "obsidian_v1"
+    phase2_config_ok = True
+    try:
+        source_specs = parse_sources_from_config(phase2_cfg)
+        expected_scheme, _, _ = _chunking_cfg_from_phase2(phase2_cfg)
+    except Exception as exc:
+        phase2_config_ok = False
+        checks.append(
+            DoctorCheckResult(
+                ok=False,
+                error_code="DOCTOR_PHASE2_CONFIG_INVALID",
+                message=f"Phase2 config invalid: {exc}",
+                suggested_fix="Fix phase2.* in configs/default.yaml, then rerun: python -m agent doctor",
+            )
+        )
+
+    if phase2_config_ok:
+        missing_source_roots: List[str] = []
+        for spec in source_specs:
+            root_path = Path(spec.root).expanduser()
+            if not root_path.is_absolute():
+                root_path = security_root / root_path
+            resolved_root = root_path.resolve()
+            if not resolved_root.exists() or not resolved_root.is_dir():
+                missing_source_roots.append(f"{spec.name}:{resolved_root}")
+        if missing_source_roots:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_SOURCE_ROOT_MISSING",
+                    message=f"Configured source roots missing: {', '.join(missing_source_roots)}",
+                    suggested_fix="Create source root directories, then rerun: python -m agent doctor",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_PHASE2_CONFIG_OK",
+                    message=f"Phase2 config valid with {len(source_specs)} sources and scheme={expected_scheme}.",
+                )
+            )
+
+    # Index schema and chunk integrity check
+    db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
+    try:
+        init_db(db_path)
+        with connect_db(db_path) as conn:
+            row = conn.execute("PRAGMA user_version").fetchone()
+            version = int(row[0]) if row is not None else 0
+            chunks_total_row = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()
+            chunks_total = int(chunks_total_row["c"]) if chunks_total_row is not None else 0
+            missing_key_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM chunks WHERE chunk_key IS NULL OR trim(chunk_key) = ''"
+            ).fetchone()
+            missing_chunk_keys = int(missing_key_row["c"]) if missing_key_row is not None else 0
+            scheme_rows = conn.execute("SELECT DISTINCT scheme FROM chunks").fetchall()
+            schemes = sorted(str(r["scheme"]) for r in scheme_rows if r["scheme"] is not None)
+            chunker_sig = get_meta(conn, "chunker_sig")
+
+        if version != 3:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_INDEX_SCHEMA_VERSION",
+                    message=f"Index schema version is {version}; expected 3.",
+                    suggested_fix=f"Run: python -m agent index --rebuild --json --db-path \"{db_path}\"",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_INDEX_SCHEMA_OK",
+                    message=f"Index schema version is {version} ({db_path}).",
+                )
+            )
+
+        if chunks_total == 0:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_INDEX_EMPTY",
+                    message=f"Index contains no chunks at {db_path}.",
+                    suggested_fix="Run: python -m agent index --rebuild --json",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_INDEX_NONEMPTY",
+                    message=f"Index contains chunks={chunks_total}.",
+                )
+            )
+
+        if chunks_total > 0 and missing_chunk_keys > 0:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_CHUNK_KEY_MISSING",
+                    message=f"{missing_chunk_keys} chunks are missing chunk_key.",
+                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_CHUNK_KEY_OK",
+                    message="All indexed chunks have non-empty chunk_key.",
+                )
+            )
+
+        mismatched = [s for s in schemes if s != expected_scheme]
+        if chunks_total > 0 and mismatched:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_CHUNK_SCHEME_MISMATCH",
+                    message=(
+                        f"Chunk schemes {schemes} do not match configured scheme={expected_scheme}."
+                    ),
+                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_CHUNK_SCHEME_OK",
+                    message=f"Chunk schemes match configured scheme={expected_scheme}.",
+                )
+            )
+
+        if chunks_total > 0 and not chunker_sig:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_CHUNKER_SIG_MISSING",
+                    message="Index meta.chunker_sig is missing while chunks exist.",
+                    suggested_fix=f"Run: python -m agent index --scheme {expected_scheme} --rebuild --json",
+                )
+            )
+        else:
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_CHUNKER_SIG_OK",
+                    message="Index meta.chunker_sig is present.",
+                )
+            )
+    except Exception as exc:
+        checks.append(
+            DoctorCheckResult(
+                ok=False,
+                error_code="DOCTOR_INDEX_DB_ERROR",
+                message=f"Index DB check failed at {db_path}: {exc}",
+                suggested_fix="Run: python -m agent index --rebuild --json",
+            )
+        )
+
+    # Ollama reachability check
+    if check_ollama:
+        try:
+            ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+            checks.append(
+                DoctorCheckResult(
+                    ok=True,
+                    error_code="DOCTOR_OLLAMA_OK",
+                    message=f"Ollama reachable at {cfg['ollama_base_url']}.",
+                )
+            )
+        except Exception as exc:
+            checks.append(
+                DoctorCheckResult(
+                    ok=False,
+                    error_code="DOCTOR_OLLAMA_UNREACHABLE",
+                    message=f"Ollama endpoint is unreachable: {exc}",
+                    suggested_fix="Start Ollama (`ollama serve`) and rerun: python -m agent doctor",
+                )
+            )
+
+    return checks
+
+
+def run_doctor(
+    cfg: Dict[str, Any],
+    *,
+    resolved_config_path: Optional[Path] = None,
+    roots: Optional[Dict[str, Optional[Path]]] = None,
+    json_output: bool = False,
+    check_ollama: bool = True,
+) -> int:
+    runtime_roots = roots or resolve_runtime_roots(
+        resolved_config_path=resolved_config_path,
+        cfg=cfg,
+        cli_workroot=None,
+    )
+    checks = collect_doctor_checks(
+        cfg,
+        resolved_config_path=resolved_config_path,
+        roots=runtime_roots,
+        check_ollama=check_ollama,
+    )
+    failed = [c for c in checks if not c.ok]
+
+    if json_output:
+        payload: Dict[str, Any] = {
+            "ok": len(failed) == 0,
+            "checks": [
+                {
+                    "ok": c.ok,
+                    "error_code": c.error_code,
+                    "message": c.message,
+                    "suggested_fix": c.suggested_fix,
+                }
+                for c in checks
+            ],
+            "resolved_config_path": _path_to_str(resolved_config_path),
+        }
+        payload.update(root_log_fields(runtime_roots))
+        print_output(json.dumps(payload, ensure_ascii=False))
+    else:
+        for c in checks:
+            tag = "OK" if c.ok else "FAIL"
+            print_output(f"[{tag}] {c.error_code}: {c.message}")
+            if (not c.ok) and c.suggested_fix:
+                print_output(f"  fix: {c.suggested_fix}")
+        print_output("")
+        print_output(f"doctor summary: ok={len(checks) - len(failed)} fail={len(failed)}")
+
+    return 0 if not failed else 1
 
 
 def _build_phase2_cfg(cfg: Dict[str, Any]) -> Dict[str, Any]:
@@ -1559,6 +1899,21 @@ def main() -> int:
     p_query.add_argument("text", type=str, help="Query text.")
     p_query.add_argument("--limit", type=int, default=5, help="Maximum number of results.")
 
+    p_doctor = sub.add_parser(
+        "doctor",
+        help="Run deterministic preflight checks for phase-3 readiness.",
+    )
+    p_doctor.add_argument(
+        "--json",
+        action="store_true",
+        help="Emit machine-readable doctor results.",
+    )
+    p_doctor.add_argument(
+        "--no-ollama",
+        action="store_true",
+        help="Skip Ollama reachability check (offline preflight mode).",
+    )
+
     args = parser.parse_args()
     loaded_cfg_path: Optional[Path] = None
     cfg = dict(DEFAULT_CONFIG)
@@ -1637,6 +1992,14 @@ def main() -> int:
             limit=int(getattr(args, "limit", 5)),
             resolved_config_path=loaded_cfg_path,
             roots=roots,
+        )
+    if args.cmd == "doctor":
+        return run_doctor(
+            cfg,
+            resolved_config_path=loaded_cfg_path,
+            roots=roots,
+            json_output=bool(getattr(args, "json", False)),
+            check_ollama=not bool(getattr(args, "no_ollama", False)),
         )
     parser.print_help()
     return 2
