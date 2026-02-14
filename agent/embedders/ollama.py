@@ -1,12 +1,24 @@
 from __future__ import annotations
 
 from array import array
+from dataclasses import dataclass
 from typing import Any
 
 import requests
 
-from agent.embedder import Embedder
 from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
+from agent.embedder import Embedder
+
+
+@dataclass
+class _EndpointError(RuntimeError):
+    endpoint: str
+    status_code: int | None
+    detail: str
+
+    def __str__(self) -> str:
+        status = self.status_code if self.status_code is not None else "unknown"
+        return f"{self.endpoint} failed (status={status}): {self.detail}"
 
 
 class OllamaEmbedder(Embedder):
@@ -27,56 +39,54 @@ class OllamaEmbedder(Embedder):
         if not texts:
             return []
 
-        bulk = self._try_embed_api_embed_bulk(texts)
-        if bulk is not None:
-            out = [array("f", vec) for vec in bulk]
-            if out and self._embed_dim <= 0:
-                self._embed_dim = len(out[0])
-            return out
+        first_error: _EndpointError | None = None
+        try:
+            payload = {"model": self.model_id, "input": texts}
+            data = self._post_json("/api/embed", payload)
+            vectors = _extract_many_embeddings(data, expected=len(texts))
+            return self._to_arrays(vectors)
+        except _EndpointError as exc:
+            first_error = exc
+            if exc.status_code != 404:
+                raise RuntimeError(f"Ollama embedding request failed via /api/embed: {exc}") from exc
 
-        out: list[array] = []
-        for text in texts:
-            out.append(array("f", self._embed_single(text)))
+        try:
+            vectors = [self._embed_single_via_embeddings_endpoint(text) for text in texts]
+            return self._to_arrays(vectors)
+        except _EndpointError as exc:
+            detail = (
+                "Ollama embedding failed after trying /api/embed then /api/embeddings: "
+                f"{first_error}; {exc}"
+            )
+            raise RuntimeError(detail) from exc
+
+    def _to_arrays(self, vectors: list[list[float]]) -> list[array]:
+        out = [array("f", vec) for vec in vectors]
         if out and self._embed_dim <= 0:
             self._embed_dim = len(out[0])
         return out
 
-    def _embed_single(self, text: str) -> list[float]:
-        last_error: Exception | None = None
-
-        payloads = [
-            ("/api/embeddings", {"model": self.model_id, "prompt": text}),
-            ("/api/embed", {"model": self.model_id, "input": text}),
-        ]
-        for endpoint, payload in payloads:
-            try:
-                data = self._post_json(endpoint, payload)
-                vec = _extract_single_embedding(data)
-                return vec
-            except Exception as exc:
-                last_error = exc
-        assert last_error is not None
-        raise RuntimeError(f"Ollama embedding request failed: {last_error}")
-
-    def _try_embed_api_embed_bulk(self, texts: list[str]) -> list[list[float]] | None:
-        payload = {"model": self.model_id, "input": texts}
-        try:
-            data = self._post_json("/api/embed", payload)
-            vectors = _extract_many_embeddings(data, expected=len(texts))
-            return vectors
-        except Exception:
-            return None
+    def _embed_single_via_embeddings_endpoint(self, text: str) -> list[float]:
+        payload = {"model": self.model_id, "prompt": text}
+        data = self._post_json("/api/embeddings", payload)
+        return _extract_single_embedding(data)
 
     def _post_json(self, endpoint: str, payload: dict[str, Any]) -> Any:
         url = f"{self.base_url}{endpoint}"
         try:
             response = requests.post(url, json=payload, timeout=self.timeout_s)
-            response.raise_for_status()
-            return response.json()
         except requests.RequestException as exc:
-            raise RuntimeError(f"{endpoint} request failed: {exc}") from exc
+            raise _EndpointError(endpoint=endpoint, status_code=None, detail=str(exc)) from exc
+
+        try:
+            response.raise_for_status()
+        except requests.HTTPError as exc:
+            raise _EndpointError(endpoint=endpoint, status_code=response.status_code, detail=str(exc)) from exc
+
+        try:
+            return response.json()
         except ValueError as exc:
-            raise RuntimeError(f"{endpoint} returned non-JSON response") from exc
+            raise _EndpointError(endpoint=endpoint, status_code=response.status_code, detail="non-JSON response") from exc
 
 
 def _coerce_vector(raw: Any) -> list[float]:
@@ -111,6 +121,8 @@ def _extract_many_embeddings(payload: Any, *, expected: int) -> list[list[float]
         raise ValueError("Embedding payload is not a JSON object")
 
     raw_embeddings = payload.get("embeddings")
+    if raw_embeddings is None and "embedding" in payload:
+        raw_embeddings = [payload.get("embedding")]
     if not isinstance(raw_embeddings, list):
         raise ValueError("Embedding payload missing 'embeddings' list")
 
