@@ -166,6 +166,46 @@ class CitationAuditTests(unittest.TestCase):
         self.assertEqual(len(report["mismatched_sha"]), 1)
         self.assertEqual(report["mismatched_sha"][0]["chunk_key"], chunk_key)
 
+    def test_citation_validator_require_in_snapshot_toggle(self) -> None:
+        key_a = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        key_b = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+        sha_a = self._insert_chunk(
+            chunk_key=key_a,
+            rel_path="a.md",
+            heading_path="H2: Alpha",
+            text="alpha text",
+        )
+        _ = self._insert_chunk(
+            chunk_key=key_b,
+            rel_path="b.md",
+            heading_path="H2: Beta",
+            text="beta text",
+        )
+        parsed = parse_citations("cite [source: b.md#H2: Beta | bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb]")
+
+        permissive = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key_a: sha_a},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+        )
+        self.assertTrue(bool(permissive["valid"]))
+        self.assertEqual(permissive["not_in_snapshot_chunk_keys"], [key_b])
+        self.assertEqual(permissive["sha_unchecked_chunk_keys"], [key_b])
+
+        enforced = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key_a: sha_a},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=True,
+        )
+        self.assertFalse(bool(enforced["valid"]))
+        self.assertEqual(enforced["not_in_snapshot_chunk_keys"], [key_b])
+
 
 if __name__ == "__main__":
     unittest.main()

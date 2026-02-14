@@ -73,6 +73,17 @@ python -m agent doctor --require-phase3 --json
 python -m agent ask "Summarize indexed evidence."
 ```
 
+Citation snapshot enforcement (recommended for strict grounding):
+```yaml
+phase3:
+  ask:
+    citation_validation:
+      enabled: true
+      strict: true
+      require_in_snapshot: true
+```
+This requires citations to reference chunk keys from the run's retrieved evidence snapshot.
+
 Model routing flags:
 ```bash
 python -m agent ask --fast "Read allowed/corpus/secret.md and summarize it."
