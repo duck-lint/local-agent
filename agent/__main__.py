@@ -13,7 +13,12 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
-from agent.citation_audit import build_evidence_log_entries, fetch_chunk_rows_for_keys
+from agent.citation_audit import (
+    build_evidence_log_entries,
+    fetch_chunk_rows_for_keys,
+    parse_citations,
+    validate_citations,
+)
 from agent.embedding_fingerprint import (
     compute_embed_sig,
 )
@@ -2800,6 +2805,7 @@ def run_ask_grounded(
         "resolved_config_path": _path_to_str(resolved_config_path),
         "started_unix": started,
         "retrieval": None,
+        "citation_validation": None,
     }
     record.update(root_log_fields(runtime_roots))
 
@@ -2810,12 +2816,18 @@ def run_ask_grounded(
         phase2_db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
         embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, security_root)
         retrieve_cfg = phase3_cfg.get("retrieve") if isinstance(phase3_cfg.get("retrieve"), dict) else {}
+        ask_cfg = phase3_cfg.get("ask") if isinstance(phase3_cfg.get("ask"), dict) else {}
         runs_cfg = phase3_cfg.get("runs") if isinstance(phase3_cfg.get("runs"), dict) else {}
+        citation_validation_cfg = (
+            ask_cfg.get("citation_validation") if isinstance(ask_cfg.get("citation_validation"), dict) else {}
+        )
         lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
         vector_k = _as_int(retrieve_cfg.get("vector_k"), 20)
         vector_fetch_k = _as_int(retrieve_cfg.get("vector_fetch_k"), 0)
         rel_path_prefix = _string_config_value(retrieve_cfg.get("rel_path_prefix")) or ""
         fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
+        citation_validation_enabled = _as_bool(citation_validation_cfg.get("enabled"), True)
+        citation_validation_strict = _as_bool(citation_validation_cfg.get("strict"), False)
         log_evidence_excerpts = _as_bool(runs_cfg.get("log_evidence_excerpts"), True)
         max_total_evidence_chars = max(0, _as_int(runs_cfg.get("max_total_evidence_chars"), 200000))
         max_excerpt_chars = max(0, _as_int(runs_cfg.get("max_excerpt_chars"), 1200))
@@ -2848,7 +2860,7 @@ def run_ask_grounded(
         )
         prompt_candidates = retrieval_result.candidates[:ASK_EVIDENCE_TOP_N]
         evidence_rows = {}
-        if log_evidence_excerpts and prompt_candidates:
+        if (log_evidence_excerpts or citation_validation_enabled) and prompt_candidates:
             evidence_rows = fetch_chunk_rows_for_keys(
                 index_db_path=phase2_db_path,
                 chunk_keys=[item.chunk_key for item in prompt_candidates],
@@ -2862,6 +2874,11 @@ def run_ask_grounded(
             )
         else:
             evidence_results, logging_truncated_total, omitted_count = ([], False, 0)
+        retrieval_snapshot_sha_by_key = {
+            item.chunk_key: str(evidence_rows[item.chunk_key].chunk_sha)
+            for item in prompt_candidates
+            if item.chunk_key in evidence_rows and evidence_rows[item.chunk_key].chunk_sha
+        }
 
         record["retrieval"] = {
             "query": retrieval_result.query,
@@ -2888,41 +2905,75 @@ def run_ask_grounded(
             "results_omitted_count": int(omitted_count),
         }
 
+        second: Optional[Dict[str, Any]] = None
         if not retrieval_result.candidates:
             final_text = _insufficient_evidence_text(question)
+        else:
+            prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=ASK_EVIDENCE_TOP_N)
+            second = ollama_chat(
+                base_url=cfg["ollama_base_url"],
+                model=second_model,
+                messages=[
+                    {"role": "system", "content": _build_grounded_system_prompt()},
+                    {"role": "user", "content": prompt},
+                ],
+                temperature=cfg["temperature"],
+                max_tokens=cfg["max_tokens_big_second"],
+                timeout_s=max(cfg["timeout_s"], _as_int(cfg.get("timeout_s_big_second"), 600)),
+            )
+            final_text = get_assistant_text(second)
+            if not _contains_citation(final_text):
+                fallback_lines = [
+                    "Insufficient citation-grounded answer from model output.",
+                    "Evidence excerpt references:",
+                ]
+                for item in retrieval_result.candidates[:5]:
+                    fallback_lines.append(_render_citation(item.rel_path, item.heading_path, item.chunk_key))
+                final_text = "\n".join(fallback_lines)
+
+        parsed_citations = parse_citations(final_text)
+        citation_validation = validate_citations(
+            parsed_citations=parsed_citations,
+            index_db_path=phase2_db_path,
+            retrieval_snapshot_sha_by_key=retrieval_snapshot_sha_by_key,
+            enabled=citation_validation_enabled,
+            strict=citation_validation_strict,
+        )
+        record["citation_validation"] = citation_validation
+
+        citation_invalid = citation_validation_enabled and not bool(citation_validation.get("valid"))
+        if citation_invalid and citation_validation_strict:
+            missing = len(citation_validation.get("missing_chunk_keys", []))
+            path_bad = len(citation_validation.get("path_mismatches", []))
+            sha_bad = len(citation_validation.get("mismatched_sha", []))
+            record["assistant_text"] = final_text
+            if second is not None:
+                record["raw_second"] = strip_thinking(second)
+            record["ok"] = False
+            record["error_code"] = "ASK_CITATION_INVALID"
+            record["error_message"] = (
+                "Citation validation failed "
+                f"(missing={missing}, path_mismatches={path_bad}, sha_mismatches={sha_bad})."
+            )
+            print(
+                json.dumps(
+                    {
+                        "ok": False,
+                        "error_code": "ASK_CITATION_INVALID",
+                        "error_message": record["error_message"],
+                    },
+                    ensure_ascii=False,
+                ),
+                file=sys.stderr,
+            )
+            return_code = 1
+        else:
             print_output(final_text)
             record["assistant_text"] = final_text
+            if second is not None:
+                record["raw_second"] = strip_thinking(second)
             record["ok"] = True
             return_code = 0
-            return return_code
-
-        prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=ASK_EVIDENCE_TOP_N)
-        second = ollama_chat(
-            base_url=cfg["ollama_base_url"],
-            model=second_model,
-            messages=[
-                {"role": "system", "content": _build_grounded_system_prompt()},
-                {"role": "user", "content": prompt},
-            ],
-            temperature=cfg["temperature"],
-            max_tokens=cfg["max_tokens_big_second"],
-            timeout_s=max(cfg["timeout_s"], _as_int(cfg.get("timeout_s_big_second"), 600)),
-        )
-        final_text = get_assistant_text(second)
-        if not _contains_citation(final_text):
-            fallback_lines = [
-                "Insufficient citation-grounded answer from model output.",
-                "Evidence excerpt references:",
-            ]
-            for item in retrieval_result.candidates[:5]:
-                fallback_lines.append(_render_citation(item.rel_path, item.heading_path, item.chunk_key))
-            final_text = "\n".join(fallback_lines)
-
-        print_output(final_text)
-        record["assistant_text"] = final_text
-        record["raw_second"] = strip_thinking(second)
-        record["ok"] = True
-        return_code = 0
     except Exception as exc:
         record["ok"] = False
         record["error_code"] = "PHASE3_ASK_ERROR"
