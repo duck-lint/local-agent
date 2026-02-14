@@ -1,6 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
+import hashlib
 import io
+import json
 import tempfile
 import unittest
 from contextlib import redirect_stdout
@@ -8,6 +10,8 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.__main__ import run_ask_grounded
+from agent.index_db import connect_db as connect_index_db
+from agent.index_db import init_db as init_index_db
 from agent.retrieval import RetrievedChunk, RetrievalResult
 
 
@@ -18,6 +22,8 @@ class Phase3AskGroundedTests(unittest.TestCase):
         self.workroot = self.tmp_path / "workroot"
         (self.workroot / "runs").mkdir(parents=True, exist_ok=True)
         (self.workroot / "index").mkdir(parents=True, exist_ok=True)
+        self.phase2_db_path = self.workroot / "index" / "index.sqlite"
+        init_index_db(self.phase2_db_path)
 
         self.cfg = {
             "ollama_base_url": "http://127.0.0.1:11434",
@@ -52,13 +58,139 @@ class Phase3AskGroundedTests(unittest.TestCase):
                     "rel_path_prefix": "",
                     "fusion": "simple_union",
                 },
+                "ask": {"citation_validation": {"enabled": True, "strict": False}},
+                "runs": {
+                    "log_evidence_excerpts": True,
+                    "max_total_evidence_chars": 200000,
+                    "max_excerpt_chars": 1200,
+                },
                 "memory": {"durable_db_path": "memory/durable.sqlite", "enabled": True},
             },
         }
         self.roots = {"security_root": self.workroot}
+        self._insert_chunk(
+            chunk_key="0123456789abcdef0123456789abcdef",
+            rel_path="a.md",
+            heading_path="H2: Alpha",
+            text="alpha",
+        )
 
     def tearDown(self) -> None:
         self._tmp.cleanup()
+
+    def _insert_chunk(self, *, chunk_key: str, rel_path: str, heading_path: str, text: str) -> None:
+        with connect_index_db(self.phase2_db_path) as conn:
+            now = 1000.0
+            conn.execute(
+                "INSERT OR IGNORE INTO sources(name, root, kind, created_at) VALUES (?, ?, ?, ?)",
+                ("corpus", "allowed/corpus/", "corpus", now),
+            )
+            source_row = conn.execute("SELECT id FROM sources WHERE name = ?", ("corpus",)).fetchone()
+            if source_row is None:
+                raise RuntimeError("expected source row")
+            source_id = int(source_row["id"])
+
+            doc_sha = hashlib.sha256(f"doc::{rel_path}".encode("utf-8")).hexdigest()
+            existing_doc = conn.execute(
+                "SELECT id FROM docs WHERE source_id = ? AND rel_path = ?",
+                (source_id, rel_path),
+            ).fetchone()
+            if existing_doc is None:
+                conn.execute(
+                    """
+                    INSERT INTO docs(
+                        source_id, rel_path, abs_path, sha256, mtime, size,
+                        is_markdown, yaml_present, yaml_parse_ok, yaml_error,
+                        required_keys_present, frontmatter_json, discovered_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        source_id,
+                        rel_path,
+                        str((self.workroot / "allowed" / "corpus" / rel_path).resolve()),
+                        doc_sha,
+                        now,
+                        len(text),
+                        1,
+                        0,
+                        0,
+                        None,
+                        0,
+                        "{}",
+                        now,
+                        now,
+                    ),
+                )
+                doc_row = conn.execute(
+                    "SELECT id FROM docs WHERE source_id = ? AND rel_path = ?",
+                    (source_id, rel_path),
+                ).fetchone()
+                if doc_row is None:
+                    raise RuntimeError("expected doc row")
+                doc_id = int(doc_row["id"])
+            else:
+                doc_id = int(existing_doc["id"])
+
+            chunk_sha = hashlib.sha256(text.encode("utf-8", errors="replace")).hexdigest()
+            existing_chunk = conn.execute(
+                "SELECT id, chunk_index FROM chunks WHERE chunk_key = ?",
+                (chunk_key,),
+            ).fetchone()
+            if existing_chunk is None:
+                index_row = conn.execute(
+                    "SELECT COALESCE(MAX(chunk_index), -1) AS max_idx FROM chunks WHERE doc_id = ?",
+                    (doc_id,),
+                ).fetchone()
+                chunk_index = int(index_row["max_idx"]) + 1 if index_row is not None else 0
+                conn.execute(
+                    """
+                    INSERT INTO chunks(
+                        doc_id, chunk_index, start_char, end_char, text, sha256,
+                        created_at, scheme, heading_path, chunk_key
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        doc_id,
+                        chunk_index,
+                        0,
+                        len(text),
+                        text,
+                        chunk_sha,
+                        now,
+                        "obsidian_v1",
+                        heading_path,
+                        chunk_key,
+                    ),
+                )
+            else:
+                conn.execute(
+                    """
+                    UPDATE chunks
+                    SET doc_id = ?, chunk_index = ?, start_char = ?, end_char = ?, text = ?, sha256 = ?,
+                        created_at = ?, scheme = ?, heading_path = ?, chunk_key = ?
+                    WHERE id = ?
+                    """,
+                    (
+                        doc_id,
+                        int(existing_chunk["chunk_index"]),
+                        0,
+                        len(text),
+                        text,
+                        chunk_sha,
+                        now,
+                        "obsidian_v1",
+                        heading_path,
+                        chunk_key,
+                        int(existing_chunk["id"]),
+                    ),
+                )
+            conn.commit()
+
+    def _latest_run_record(self) -> dict:
+        run_dirs = sorted((self.workroot / "runs").glob("*"))
+        if not run_dirs:
+            raise AssertionError("expected run dir")
+        return json.loads((run_dirs[-1] / "run.json").read_text(encoding="utf-8"))
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
@@ -140,6 +272,131 @@ class Phase3AskGroundedTests(unittest.TestCase):
         self.assertEqual(code, 0)
         output = buffer.getvalue()
         self.assertIn("Insufficient public evidence", output)
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_run_logging_includes_evidence_excerpts_and_caps(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["runs"]["max_total_evidence_chars"] = 30
+        self.cfg["phase3"]["runs"]["max_excerpt_chars"] = 12
+        self._insert_chunk(
+            chunk_key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+            rel_path="a.md",
+            heading_path="H2: Alpha",
+            text="A" * 20,
+        )
+        self._insert_chunk(
+            chunk_key="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+            rel_path="b.md",
+            heading_path="H2: Beta",
+            text="B" * 20,
+        )
+        self._insert_chunk(
+            chunk_key="cccccccccccccccccccccccccccccccc",
+            rel_path="c.md",
+            heading_path="H2: Gamma",
+            text="C" * 20,
+        )
+        self._insert_chunk(
+            chunk_key="dddddddddddddddddddddddddddddddd",
+            rel_path="d.md",
+            heading_path="H2: Delta",
+            text="D" * 20,
+        )
+
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=5,
+            vector_candidates_scored=4,
+            vector_candidates_prefilter=4,
+            vector_candidates_postfilter=4,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key="aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                    rel_path="a.md",
+                    heading_path="H2: Alpha",
+                    text="unused",
+                    score=1.0,
+                    method="both",
+                    lexical_score=1.0,
+                    vector_score=1.0,
+                ),
+                RetrievedChunk(
+                    chunk_key="bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+                    rel_path="b.md",
+                    heading_path="H2: Beta",
+                    text="unused",
+                    score=0.9,
+                    method="both",
+                    lexical_score=0.9,
+                    vector_score=0.9,
+                ),
+                RetrievedChunk(
+                    chunk_key="cccccccccccccccccccccccccccccccc",
+                    rel_path="c.md",
+                    heading_path="H2: Gamma",
+                    text="unused",
+                    score=0.8,
+                    method="vector",
+                    lexical_score=0.0,
+                    vector_score=0.8,
+                ),
+                RetrievedChunk(
+                    chunk_key="dddddddddddddddddddddddddddddddd",
+                    rel_path="d.md",
+                    heading_path="H2: Delta",
+                    text="unused",
+                    score=0.7,
+                    method="lexical",
+                    lexical_score=0.7,
+                    vector_score=0.0,
+                ),
+            ],
+        )
+        mock_chat.return_value = {
+            "message": {
+                "content": "Answer [source: a.md#H2: Alpha | aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa]"
+            }
+        }
+
+        buffer = io.StringIO()
+        with redirect_stdout(buffer):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+
+        record = self._latest_run_record()
+        retrieval = record["retrieval"]
+        self.assertEqual(retrieval["logging_caps"]["max_total_chars"], 30)
+        self.assertEqual(retrieval["logging_caps"]["max_excerpt_chars"], 12)
+        self.assertTrue(bool(retrieval["logging_truncated_total"]))
+        self.assertEqual(int(retrieval["results_logged_count"]), 3)
+        self.assertEqual(int(retrieval["results_omitted_count"]), 1)
+        results = retrieval["results"]
+        self.assertEqual(len(results), 3)
+        self.assertEqual(results[0]["chunk_sha"], hashlib.sha256(("A" * 20).encode("utf-8")).hexdigest())
+        self.assertEqual(len(results[0]["excerpt"]), 12)
+        self.assertEqual(len(results[1]["excerpt"]), 12)
+        self.assertEqual(len(results[2]["excerpt"]), 6)
+        self.assertTrue(bool(results[2]["excerpt_truncated"]))
+        self.assertEqual(
+            results[2]["excerpt_sha"],
+            hashlib.sha256(results[2]["excerpt"].encode("utf-8")).hexdigest(),
+        )
 
 
 if __name__ == "__main__":

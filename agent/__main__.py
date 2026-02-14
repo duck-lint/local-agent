@@ -13,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 import requests
 import yaml
 
+from agent.citation_audit import build_evidence_log_entries, fetch_chunk_rows_for_keys
 from agent.embedding_fingerprint import (
     compute_embed_sig,
 )
@@ -100,6 +101,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 READ_TEXT_FILE_HARD_CAP = 200_000
 WORKROOT_ENV_VAR = "LOCAL_AGENT_WORKROOT"
+ASK_EVIDENCE_TOP_N = 8
 
 
 def discover_config_path(
@@ -2736,7 +2738,11 @@ def _build_grounded_system_prompt() -> str:
     )
 
 
-def _build_grounded_user_prompt(question: str, retrieval_result: RetrievalResult, top_n: int = 8) -> str:
+def _build_grounded_user_prompt(
+    question: str,
+    retrieval_result: RetrievalResult,
+    top_n: int = ASK_EVIDENCE_TOP_N,
+) -> str:
     lines: List[str] = []
     lines.append("Question:")
     lines.append(question.strip())
@@ -2804,11 +2810,15 @@ def run_ask_grounded(
         phase2_db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
         embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, security_root)
         retrieve_cfg = phase3_cfg.get("retrieve") if isinstance(phase3_cfg.get("retrieve"), dict) else {}
+        runs_cfg = phase3_cfg.get("runs") if isinstance(phase3_cfg.get("runs"), dict) else {}
         lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
         vector_k = _as_int(retrieve_cfg.get("vector_k"), 20)
         vector_fetch_k = _as_int(retrieve_cfg.get("vector_fetch_k"), 0)
         rel_path_prefix = _string_config_value(retrieve_cfg.get("rel_path_prefix")) or ""
         fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
+        log_evidence_excerpts = _as_bool(runs_cfg.get("log_evidence_excerpts"), True)
+        max_total_evidence_chars = max(0, _as_int(runs_cfg.get("max_total_evidence_chars"), 200000))
+        max_excerpt_chars = max(0, _as_int(runs_cfg.get("max_excerpt_chars"), 1200))
         provider, model_id, preprocess_name, chunk_preprocess_sig, query_preprocess_sig, _ = parse_embed_runtime(
             phase3_cfg,
             model_override=None,
@@ -2836,6 +2846,22 @@ def run_ask_grounded(
             rel_path_prefix=rel_path_prefix,
             fusion=fusion,
         )
+        prompt_candidates = retrieval_result.candidates[:ASK_EVIDENCE_TOP_N]
+        evidence_rows = {}
+        if log_evidence_excerpts and prompt_candidates:
+            evidence_rows = fetch_chunk_rows_for_keys(
+                index_db_path=phase2_db_path,
+                chunk_keys=[item.chunk_key for item in prompt_candidates],
+            )
+        if log_evidence_excerpts:
+            evidence_results, logging_truncated_total, omitted_count = build_evidence_log_entries(
+                candidates=prompt_candidates,
+                chunk_rows=evidence_rows,
+                max_total_chars=max_total_evidence_chars,
+                max_excerpt_chars=max_excerpt_chars,
+            )
+        else:
+            evidence_results, logging_truncated_total, omitted_count = ([], False, 0)
 
         record["retrieval"] = {
             "query": retrieval_result.query,
@@ -2852,6 +2878,14 @@ def run_ask_grounded(
             "vector_filter_warning": retrieval_result.vector_filter_warning,
             "candidates_count": len(retrieval_result.candidates),
             "chunk_keys": [item.chunk_key for item in retrieval_result.candidates[:20]],
+            "results": evidence_results,
+            "logging_caps": {
+                "max_total_chars": max_total_evidence_chars,
+                "max_excerpt_chars": max_excerpt_chars,
+            },
+            "logging_truncated_total": bool(logging_truncated_total),
+            "results_logged_count": len(evidence_results),
+            "results_omitted_count": int(omitted_count),
         }
 
         if not retrieval_result.candidates:
@@ -2862,7 +2896,7 @@ def run_ask_grounded(
             return_code = 0
             return return_code
 
-        prompt = _build_grounded_user_prompt(question, retrieval_result)
+        prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=ASK_EVIDENCE_TOP_N)
         second = ollama_chat(
             base_url=cfg["ollama_base_url"],
             model=second_model,

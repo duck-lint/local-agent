@@ -85,6 +85,14 @@ phase3:
     vector_fetch_k: 0
     rel_path_prefix: ""
     fusion: "simple_union"
+  ask:
+    citation_validation:
+      enabled: true
+      strict: false
+  runs:
+    log_evidence_excerpts: true
+    max_total_evidence_chars: 200000
+    max_excerpt_chars: 1200
   memory:
     durable_db_path: "memory/durable.sqlite"
     enabled: true

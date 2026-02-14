@@ -58,6 +58,17 @@ DEFAULT_PHASE3: dict[str, Any] = {
         "rel_path_prefix": "",
         "fusion": "simple_union",
     },
+    "ask": {
+        "citation_validation": {
+            "enabled": True,
+            "strict": False,
+        }
+    },
+    "runs": {
+        "log_evidence_excerpts": True,
+        "max_total_evidence_chars": 200000,
+        "max_excerpt_chars": 1200,
+    },
     "memory": {
         "durable_db_path": "memory/durable.sqlite",
         "enabled": True,
@@ -121,6 +132,8 @@ def build_phase3_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         "embeddings_db_path": DEFAULT_PHASE3["embeddings_db_path"],
         "embed": dict(DEFAULT_PHASE3["embed"]),
         "retrieve": dict(DEFAULT_PHASE3["retrieve"]),
+        "ask": dict(DEFAULT_PHASE3["ask"]),
+        "runs": dict(DEFAULT_PHASE3["runs"]),
         "memory": dict(DEFAULT_PHASE3["memory"]),
     }
     raw = cfg.get("phase3")
@@ -146,6 +159,27 @@ def build_phase3_cfg(cfg: dict[str, Any]) -> dict[str, Any]:
         retrieve = dict(base["retrieve"])
         retrieve.update(raw_retrieve)
         base["retrieve"] = retrieve
+
+    raw_ask = raw.get("ask")
+    if isinstance(raw_ask, dict):
+        ask = dict(base["ask"])
+        citation_validation = (
+            ask.get("citation_validation") if isinstance(ask.get("citation_validation"), dict) else {}
+        )
+        raw_citation_validation = (
+            raw_ask.get("citation_validation") if isinstance(raw_ask.get("citation_validation"), dict) else {}
+        )
+        merged_citation_validation = dict(citation_validation)
+        merged_citation_validation.update(raw_citation_validation)
+        ask.update(raw_ask)
+        ask["citation_validation"] = merged_citation_validation
+        base["ask"] = ask
+
+    raw_runs = raw.get("runs")
+    if isinstance(raw_runs, dict):
+        runs = dict(base["runs"])
+        runs.update(raw_runs)
+        base["runs"] = runs
 
     raw_memory = raw.get("memory")
     if isinstance(raw_memory, dict):
