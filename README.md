@@ -363,6 +363,23 @@ local-agent doctor --require-phase3 --json
 
 Phase 3 adds embeddings, retrieval fusion, and durable memory stores with explicit provenance invariants.
 
+### Torch-first embedding setup (offline)
+
+Phase 3 now defaults to `phase3.embed.provider: torch`.
+
+Install optional embedding dependencies:
+
+```bash
+pip install -e ".[torch-embed]"
+```
+
+No silent downloads are allowed during `local-agent embed`.
+You must either:
+- set `phase3.embed.torch.local_model_path` to a local model directory, or
+- pre-populate local cache and set `phase3.embed.torch.cache_dir`.
+
+If model files are unavailable locally, embed fails closed with `PHASE3_EMBED_ERROR`.
+
 ### Phase 3 command reference
 
 Embed corpus chunks from phase2 index:
@@ -402,7 +419,17 @@ Top-level:
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
-  - `embed` (`provider`, `model_id`, `preprocess`, `chunk_preprocess_sig`, `query_preprocess_sig`, `batch_size`)
+  - `embed`
+    - `provider` (`torch` default, `ollama` optional)
+    - `model_id`
+    - `preprocess`, `chunk_preprocess_sig`, `query_preprocess_sig`
+    - `batch_size`
+    - `torch.local_model_path`
+    - `torch.cache_dir`
+    - `torch.device`, `torch.dtype`
+    - `torch.batch_size`, `torch.max_length`
+    - `torch.pooling`, `torch.normalize`
+    - `torch.trust_remote_code`, `torch.offline_only`
   - `retrieve` (`lexical_k`, `vector_k`, `vector_fetch_k`, `rel_path_prefix`, `fusion`)
   - `memory` (`durable_db_path`, `enabled`)
 
@@ -456,6 +483,9 @@ Frequent codes and first checks:
 - `DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3`
   - preflight found embedding rows that do not match current phase3 model/preprocess/chunk hashes
   - run `python -m agent embed --json` (or `--rebuild --json`)
+- `DOCTOR_EMBED_RUNTIME_FINGERPRINT_MISMATCH`
+  - embedding provider/runtime fingerprint changed since embeddings were written
+  - run `python -m agent embed --rebuild --json`
 - `DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING`
   - phase3-required preflight found no embeddings DB
   - run `python -m agent embed --json`
@@ -464,7 +494,7 @@ Frequent codes and first checks:
   - delete or repair dangling memory records
 - `DOCTOR_PHASE3_RETRIEVAL_NOT_READY`
   - embeddings metadata looked valid but retrieval readiness smoke test failed
-  - verify Ollama availability, then run `python -m agent embed --rebuild --json` and re-run doctor
+  - verify embed provider runtime availability, then run `python -m agent embed --rebuild --json` and re-run doctor
 
 Debug tip:
 - open latest `runs/<run_id>/run.json`
@@ -494,7 +524,8 @@ Manual security checklist:
 - see `SECURITY.md`
 
 Doctor tip:
-- use `python -m agent doctor --no-ollama` for offline preflight when Ollama is intentionally not running.
+- use `python -m agent doctor --no-ollama` to skip only Ollama network checks.
+- with `phase3.embed.provider: torch`, retrieval smoke still runs under `--no-ollama`.
 
 ## Release zip
 

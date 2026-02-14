@@ -19,6 +19,10 @@ On Linux/macOS:
 source .venv/bin/activate
 pip install -e .
 ```
+For torch-first embeddings:
+```bash
+pip install -e ".[torch-embed]"
+```
 3. Repo config exists (always used):
 - Runtime config path is fixed to `local-agent/configs/default.yaml`.
 - Launch directory does not change config selection.
@@ -59,6 +63,14 @@ local-agent embed --json
 local-agent memory list --json
 local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
+```
+
+Torch-first phase3 flow:
+```bash
+python -m agent index --rebuild --json
+python -m agent embed --json
+python -m agent doctor --require-phase3 --json
+python -m agent ask "Summarize indexed evidence."
 ```
 
 Model routing flags:
@@ -142,12 +154,18 @@ Check these fields in order:
 - `DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3`
   - strict phase3 preflight found outdated/mismatched embedding rows
   - run `python -m agent embed --json` (or `--rebuild --json`)
+- `DOCTOR_EMBED_RUNTIME_FINGERPRINT_MISMATCH`
+  - embedding runtime/provider fingerprint changed from stored meta
+  - run `python -m agent embed --rebuild --json`
 - `DOCTOR_MEMORY_DANGLING_EVIDENCE`
   - durable memory points at chunk keys not present in phase2 index
   - delete/repair dangling records
 - `DOCTOR_PHASE3_RETRIEVAL_NOT_READY`
   - phase3 smoke retrieval failed under doctor
-  - verify Ollama is reachable, then run `python -m agent embed --rebuild --json` and rerun doctor
+  - verify embed runtime availability, then run `python -m agent embed --rebuild --json` and rerun doctor
+- `PHASE3_EMBED_ERROR` (torch provider)
+  - local model not found and offline-only blocked fallback download
+  - set `phase3.embed.torch.local_model_path` or pre-populate `phase3.embed.torch.cache_dir`
 
 ## 6) Security sanity checks
 
@@ -175,4 +193,5 @@ python -m agent ask "Read dupe.md and summarize it."
 3. If evidence fails, check `evidence_status` and truncation fields.
 4. If answer fails, inspect second-pass violations/retry metadata.
 5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
-   For offline preflight, use `python -m agent doctor --no-ollama` (retrieval smoke is skipped intentionally).
+   For offline preflight, use `python -m agent doctor --no-ollama`.
+   Under `phase3.embed.provider: torch`, retrieval smoke still runs with `--no-ollama`.
