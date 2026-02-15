@@ -5,7 +5,12 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.citation_audit import format_citation_validation_footer, parse_citations, validate_citations
+from agent.citation_audit import (
+    count_citation_markers,
+    format_citation_validation_footer,
+    parse_citations,
+    validate_citations,
+)
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
 
@@ -216,6 +221,35 @@ class CitationAuditTests(unittest.TestCase):
         self.assertEqual(
             format_citation_validation_footer(report),
             "(missing=2, path_mismatches=1, sha_mismatches=0, not_in_snapshot=1)",
+        )
+
+    def test_unparseable_citation_markers_are_counted_and_invalidate(self) -> None:
+        key = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        sha = self._insert_chunk(
+            chunk_key=key,
+            rel_path="a.md",
+            heading_path="H2: Alpha",
+            text="alpha text",
+        )
+        answer = "Malformed [source: a.md | H2: Alpha]"
+        parsed = parse_citations(answer)
+        self.assertEqual(parsed, [])
+        report = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            citation_markers_found=count_citation_markers(answer),
+        )
+        self.assertEqual(int(report["citation_markers_found"]), 1)
+        self.assertEqual(int(report["parsed_citations_count"]), 0)
+        self.assertEqual(int(report["unparseable_citations_count"]), 1)
+        self.assertFalse(bool(report["valid"]))
+        self.assertEqual(
+            format_citation_validation_footer(report),
+            "(missing=1, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",
         )
 
     def test_heading_normalization_allows_punctuation_variation(self) -> None:

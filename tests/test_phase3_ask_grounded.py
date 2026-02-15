@@ -9,7 +9,7 @@ from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from unittest.mock import patch
 
-from agent.__main__ import run_ask_grounded
+from agent.__main__ import _build_grounded_system_prompt, run_ask_grounded
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
 from agent.retrieval import RetrievedChunk, RetrievalResult
@@ -201,6 +201,12 @@ class Phase3AskGroundedTests(unittest.TestCase):
             f"sha_mismatches={sha_mismatches}, not_in_snapshot={not_in_snapshot})"
         )
 
+    def test_second_pass_prompt_contains_citation_invariants(self) -> None:
+        prompt = _build_grounded_system_prompt()
+        self.assertIn("CITATION INVARIANTS", prompt)
+        self.assertIn("[source: <rel_path>#<heading_path> | <chunk_key>]", prompt)
+        self.assertIn("INSUFFICIENT_EVIDENCE", prompt)
+
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
     @patch("agent.__main__.retrieve")
@@ -213,6 +219,7 @@ class Phase3AskGroundedTests(unittest.TestCase):
         mock_ensure_up,
     ) -> None:
         _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["citation_validation"]["enabled"] = False
         mock_retrieve.return_value = RetrievalResult(
             query="q",
             chunker_sig="sig",
@@ -281,6 +288,72 @@ class Phase3AskGroundedTests(unittest.TestCase):
         self.assertEqual(code, 0)
         output = buffer.getvalue()
         self.assertIn("Insufficient public evidence", output)
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_non_strict_invalid_unparseable_returns_raw_answer_no_fallback(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["citation_validation"]["enabled"] = True
+        self.cfg["phase3"]["ask"]["citation_validation"]["strict"] = False
+        key = "0123456789abcdef0123456789abcdef"
+        raw_answer = "Answer with malformed citation [source: a.md | H2: Alpha]"
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=5,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path="a.md",
+                    heading_path="H2: Alpha",
+                    text="alpha",
+                    score=1.0,
+                    method="both",
+                    lexical_score=1.0,
+                    vector_score=1.0,
+                )
+            ],
+        )
+        mock_chat.return_value = {"message": {"content": raw_answer}}
+
+        out = io.StringIO()
+        with redirect_stdout(out):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 0)
+        output = out.getvalue()
+        self.assertIn(raw_answer, output)
+        self.assertNotIn("Insufficient citation-grounded answer from model output.", output)
+        footer = self._footer(missing=1, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)
+        self.assertEqual(output.count(footer), 1)
+
+        record = self._latest_run_record()
+        self.assertEqual(record.get("citation_validation_footer"), footer)
+        self.assertEqual(record["grounding_gate"]["reason"], "non_strict_invalid_returned")
+        raw_report = record.get("citation_validation_raw_answer")
+        final_report = record.get("citation_validation_final_answer")
+        self.assertIsInstance(raw_report, dict)
+        self.assertIsInstance(final_report, dict)
+        self.assertEqual(int(raw_report.get("unparseable_citations_count", 0)), 1)
+        self.assertEqual(int(final_report.get("unparseable_citations_count", 0)), 1)
+        self.assertFalse(bool(raw_report.get("valid")))
+        self.assertEqual(raw_report, final_report)
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
@@ -592,6 +665,67 @@ class Phase3AskGroundedTests(unittest.TestCase):
         self.assertFalse(bool(validation["valid"]))
         self.assertEqual(len(validation["path_mismatches"]), 1)
         self.assertEqual(record.get("citation_validation_footer"), expected_footer)
+
+    @patch("agent.__main__.ensure_ollama_up")
+    @patch("agent.__main__.create_embedder")
+    @patch("agent.__main__.retrieve")
+    @patch("agent.__main__.ollama_chat")
+    def test_strict_invalid_unparseable_fails_closed_and_logs_raw_vs_final(
+        self,
+        mock_chat,
+        mock_retrieve,
+        mock_create_embedder,
+        mock_ensure_up,
+    ) -> None:
+        _ = mock_ensure_up, mock_create_embedder
+        self.cfg["phase3"]["ask"]["citation_validation"]["enabled"] = True
+        self.cfg["phase3"]["ask"]["citation_validation"]["strict"] = True
+        key = "0123456789abcdef0123456789abcdef"
+        raw_answer = "Answer with malformed citation [source: a.md | H2: Alpha]"
+        mock_retrieve.return_value = RetrievalResult(
+            query="q",
+            chunker_sig="sig",
+            embed_model_id="m",
+            chunk_preprocess_sig="p1",
+            query_preprocess_sig="p2",
+            embed_db_schema_version=1,
+            vector_fetch_k_used=5,
+            vector_candidates_scored=1,
+            vector_candidates_prefilter=1,
+            vector_candidates_postfilter=1,
+            rel_path_prefix_applied=False,
+            vector_filter_warning="",
+            candidates=[
+                RetrievedChunk(
+                    chunk_key=key,
+                    rel_path="a.md",
+                    heading_path="H2: Alpha",
+                    text="alpha",
+                    score=1.0,
+                    method="both",
+                    lexical_score=1.0,
+                    vector_score=1.0,
+                )
+            ],
+        )
+        mock_chat.return_value = {"message": {"content": raw_answer}}
+
+        out = io.StringIO()
+        err = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(err):
+            code = run_ask_grounded(self.cfg, "question", roots=self.roots)
+        self.assertEqual(code, 1)
+        err_payload = json.loads(err.getvalue().strip())
+        self.assertEqual(err_payload["error_code"], "ASK_CITATION_INVALID")
+        footer = self._footer(missing=1, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)
+        self.assertIn(footer, err_payload["error_message"])
+
+        record = self._latest_run_record()
+        self.assertEqual(record["grounding_gate"]["reason"], "strict_fail")
+        self.assertIsInstance(record.get("citation_validation_raw_answer"), dict)
+        self.assertIsNone(record.get("citation_validation_final_answer"))
+        self.assertEqual(record.get("citation_validation_footer"), footer)
+        self.assertEqual(record.get("error_code"), "ASK_CITATION_INVALID")
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")
