@@ -15,6 +15,7 @@ import yaml
 
 from agent.citation_audit import (
     build_evidence_log_entries,
+    count_citation_markers,
     fetch_chunk_rows_for_keys,
     format_citation_validation_footer,
     parse_citations,
@@ -2740,7 +2741,15 @@ def _build_grounded_system_prompt() -> str:
         "You are a grounded QA assistant. Use only provided retrieval evidence. "
         "Cite claims using the exact format: [source: rel_path#heading_path | chunk_key]. "
         "If evidence is insufficient, say so explicitly and ask for a narrower query. "
-        "Never fabricate citations."
+        "Never fabricate citations.\n\n"
+        "CITATION INVARIANTS (must follow exactly):\n"
+        "1) Citation grammar is exactly: [source: <rel_path>#<heading_path> | <chunk_key>] where chunk_key is 32 lowercase hex.\n"
+        "2) Never rewrite, reformat, or paraphrase anything inside any citation bracket.\n"
+        "3) Treat any span from '[source:' through the closing ']' as immutable literal text.\n"
+        "4) Do not remove chunk_key and do not change '#' or '|'.\n"
+        "5) If you cannot include citations exactly, output literal 'INSUFFICIENT_EVIDENCE' and nothing else.\n"
+        "Correct: [source: notes/a.md#H1: Intro | 0123456789abcdef0123456789abcdef]\n"
+        "Incorrect: [source: notes/a.md | H1: Intro]"
     )
 
 
@@ -2807,6 +2816,10 @@ def run_ask_grounded(
         "started_unix": started,
         "retrieval": None,
         "citation_validation": None,
+        "citation_validation_raw_answer": None,
+        "citation_validation_final_answer": None,
+        "citation_validation_footer": "",
+        "grounding_gate": None,
     }
     record.update(root_log_fields(runtime_roots))
 
@@ -2925,8 +2938,11 @@ def run_ask_grounded(
         }
 
         second: Optional[Dict[str, Any]] = None
+        raw_answer_text = ""
+        final_text = ""
         if not retrieval_result.candidates:
-            final_text = _insufficient_evidence_text(question)
+            raw_answer_text = _insufficient_evidence_text(question)
+            final_text = raw_answer_text
         else:
             prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=sanitized_top_n)
             second = ollama_chat(
@@ -2940,8 +2956,9 @@ def run_ask_grounded(
                 max_tokens=cfg["max_tokens_big_second"],
                 timeout_s=max(cfg["timeout_s"], _as_int(cfg.get("timeout_s_big_second"), 600)),
             )
-            final_text = get_assistant_text(second)
-            if not _contains_citation(final_text):
+            raw_answer_text = get_assistant_text(second)
+            final_text = raw_answer_text
+            if (not citation_validation_enabled) and (not _contains_citation(raw_answer_text)):
                 fallback_lines = [
                     "Insufficient citation-grounded answer from model output.",
                     "Evidence excerpt references:",
@@ -2950,21 +2967,64 @@ def run_ask_grounded(
                     fallback_lines.append(_render_citation(item.rel_path, item.heading_path, item.chunk_key))
                 final_text = "\n".join(fallback_lines)
 
-        parsed_citations = parse_citations(final_text)
-        citation_validation = validate_citations(
-            parsed_citations=parsed_citations,
-            index_db_path=phase2_db_path,
-            retrieval_snapshot_sha_by_key=retrieval_snapshot_sha_by_key,
-            enabled=citation_validation_enabled,
-            strict=citation_validation_strict,
-            require_in_snapshot=citation_require_in_snapshot,
-            heading_match=citation_heading_match,
-            normalize_heading=citation_normalize_heading,
+        citation_validation_raw = None
+        citation_validation_final = None
+        grounding_gate_reason = "ok"
+        if citation_validation_enabled:
+            parsed_raw_citations = parse_citations(raw_answer_text)
+            citation_validation_raw = validate_citations(
+                parsed_citations=parsed_raw_citations,
+                index_db_path=phase2_db_path,
+                retrieval_snapshot_sha_by_key=retrieval_snapshot_sha_by_key,
+                enabled=citation_validation_enabled,
+                strict=citation_validation_strict,
+                require_in_snapshot=citation_require_in_snapshot,
+                heading_match=citation_heading_match,
+                normalize_heading=citation_normalize_heading,
+                citation_markers_found=count_citation_markers(raw_answer_text),
+            )
+            if bool(citation_validation_raw.get("valid")):
+                grounding_gate_reason = "ok"
+                final_text = raw_answer_text
+            elif citation_validation_strict:
+                grounding_gate_reason = "strict_fail"
+                final_text = raw_answer_text
+            else:
+                grounding_gate_reason = "non_strict_invalid_returned"
+                final_text = raw_answer_text
+
+            if grounding_gate_reason != "strict_fail":
+                parsed_final_citations = parse_citations(final_text)
+                citation_validation_final = validate_citations(
+                    parsed_citations=parsed_final_citations,
+                    index_db_path=phase2_db_path,
+                    retrieval_snapshot_sha_by_key=retrieval_snapshot_sha_by_key,
+                    enabled=citation_validation_enabled,
+                    strict=citation_validation_strict,
+                    require_in_snapshot=citation_require_in_snapshot,
+                    heading_match=citation_heading_match,
+                    normalize_heading=citation_normalize_heading,
+                    citation_markers_found=count_citation_markers(final_text),
+                )
+
+        citation_validation = (
+            citation_validation_final if citation_validation_final is not None else citation_validation_raw
         )
         citation_validation_footer = ""
         if citation_validation_enabled:
-            citation_validation_footer = format_citation_validation_footer(citation_validation)
-        record["citation_validation"] = citation_validation
+            citation_validation_footer = format_citation_validation_footer(
+                citation_validation_raw or citation_validation or {}
+            )
+        if isinstance(citation_validation, dict):
+            record["citation_validation"] = dict(citation_validation)
+        else:
+            record["citation_validation"] = citation_validation
+        record["citation_validation_raw_answer"] = citation_validation_raw
+        record["citation_validation_final_answer"] = citation_validation_final
+        record["grounding_gate"] = {
+            "reason": grounding_gate_reason,
+            "strict": bool(citation_validation_strict),
+        }
         if isinstance(record["citation_validation"], dict):
             record["citation_validation"]["snapshot"] = {
                 "top_n": effective_top_n,
@@ -2972,7 +3032,7 @@ def run_ask_grounded(
             }
         record["citation_validation_footer"] = citation_validation_footer
 
-        citation_invalid = citation_validation_enabled and not bool(citation_validation.get("valid"))
+        citation_invalid = citation_validation_enabled and bool(citation_validation_raw) and not bool(citation_validation_raw.get("valid"))
         if citation_invalid and citation_validation_strict:
             record["assistant_text"] = final_text
             if second is not None:

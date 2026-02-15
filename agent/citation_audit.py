@@ -29,6 +29,7 @@ class ParsedCitation:
 _CITATION_PATTERN = re.compile(
     r"\[source:\s*(?P<path>[^|\]]+?)\s*\|\s*(?P<chunk_key>[0-9a-f]{32})\s*\]"
 )
+_CITATION_MARKER_PATTERN = re.compile(r"\[source:")
 
 
 def fetch_chunk_rows_for_keys(*, index_db_path: Path, chunk_keys: list[str]) -> dict[str, ChunkAuditRow]:
@@ -82,6 +83,10 @@ def parse_citations(answer: str) -> list[ParsedCitation]:
             )
         )
     return out
+
+
+def count_citation_markers(answer: str) -> int:
+    return len(_CITATION_MARKER_PATTERN.findall(answer or ""))
 
 
 def build_evidence_log_entries(
@@ -151,6 +156,7 @@ def validate_citations(
     require_in_snapshot: bool,
     heading_match: str = "prefix",
     normalize_heading: bool = True,
+    citation_markers_found: int | None = None,
 ) -> dict[str, Any]:
     heading_strategy = str(heading_match or "prefix").strip().lower() or "prefix"
     if heading_strategy not in {"exact", "prefix", "ignore"}:
@@ -164,6 +170,13 @@ def validate_citations(
         }
         for item in parsed_citations
     ]
+    parsed_citations_count = len(parsed_payload)
+    marker_count = (
+        max(0, int(citation_markers_found))
+        if citation_markers_found is not None
+        else parsed_citations_count
+    )
+    unparseable_citations_count = max(0, marker_count - parsed_citations_count)
     if not enabled:
         return {
             "enabled": False,
@@ -172,6 +185,9 @@ def validate_citations(
             "heading_match_strategy": heading_strategy,
             "normalize_heading": normalize_heading_flag,
             "parsed_citations": parsed_payload,
+            "parsed_citations_count": parsed_citations_count,
+            "citation_markers_found": marker_count,
+            "unparseable_citations_count": unparseable_citations_count,
             "not_in_snapshot_chunk_keys": [],
             "missing_chunk_keys": [],
             "mismatched_sha": [],
@@ -308,6 +324,9 @@ def validate_citations(
         "heading_match_strategy": heading_strategy,
         "normalize_heading": normalize_heading_flag,
         "parsed_citations": parsed_payload,
+        "parsed_citations_count": parsed_citations_count,
+        "citation_markers_found": marker_count,
+        "unparseable_citations_count": unparseable_citations_count,
         "not_in_snapshot_chunk_keys": sorted(not_in_snapshot),
         "missing_chunk_keys": sorted(missing_keys),
         "mismatched_sha": mismatched_sha,
@@ -317,13 +336,14 @@ def validate_citations(
             not missing_keys
             and not mismatched_sha
             and not invalid_path_mismatch
+            and unparseable_citations_count == 0
             and (not require_in_snapshot or not not_in_snapshot)
         ),
     }
 
 
 def format_citation_validation_footer(report: Mapping[str, Any]) -> str:
-    missing = len(list(report.get("missing_chunk_keys") or []))
+    missing = len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0)
     path_mismatches = len(list(report.get("path_mismatches") or []))
     sha_mismatches = len(list(report.get("mismatched_sha") or []))
     not_in_snapshot = len(list(report.get("not_in_snapshot_chunk_keys") or []))
