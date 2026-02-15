@@ -6,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from agent.citation_audit import (
+    citation_validation_counts,
     count_citation_markers,
     format_citation_validation_footer,
     parse_citations,
@@ -214,13 +215,24 @@ class CitationAuditTests(unittest.TestCase):
     def test_format_citation_validation_footer(self) -> None:
         report = {
             "missing_chunk_keys": ["a", "b"],
+            "unparseable_citations_count": 1,
             "path_mismatches": [{"chunk_key": "a"}],
             "mismatched_sha": [],
             "not_in_snapshot_chunk_keys": ["x"],
         }
+        counts = citation_validation_counts(report)
+        self.assertEqual(
+            counts,
+            {
+                "missing": 3,
+                "path_mismatches": 1,
+                "sha_mismatches": 0,
+                "not_in_snapshot": 1,
+            },
+        )
         self.assertEqual(
             format_citation_validation_footer(report),
-            "(missing=2, path_mismatches=1, sha_mismatches=0, not_in_snapshot=1)",
+            "(missing=3, path_mismatches=1, sha_mismatches=0, not_in_snapshot=1)",
         )
 
     def test_unparseable_citation_markers_are_counted_and_invalidate(self) -> None:
@@ -247,6 +259,15 @@ class CitationAuditTests(unittest.TestCase):
         self.assertEqual(int(report["parsed_citations_count"]), 0)
         self.assertEqual(int(report["unparseable_citations_count"]), 1)
         self.assertFalse(bool(report["valid"]))
+        self.assertEqual(
+            report["counts"],
+            {
+                "missing": 1,
+                "path_mismatches": 0,
+                "sha_mismatches": 0,
+                "not_in_snapshot": 0,
+            },
+        )
         self.assertEqual(
             format_citation_validation_footer(report),
             "(missing=1, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",

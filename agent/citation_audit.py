@@ -178,7 +178,7 @@ def validate_citations(
     )
     unparseable_citations_count = max(0, marker_count - parsed_citations_count)
     if not enabled:
-        return {
+        report = {
             "enabled": False,
             "strict": bool(strict),
             "require_in_snapshot": bool(require_in_snapshot),
@@ -195,6 +195,10 @@ def validate_citations(
             "sha_unchecked_chunk_keys": [],
             "valid": True,
         }
+        counts = citation_validation_counts(report)
+        _assert_citation_counts_consistent(report, counts)
+        report["counts"] = counts
+        return report
 
     cited_keys = sorted({item.chunk_key for item in parsed_citations if item.chunk_key})
     db_rows = fetch_chunk_rows_for_keys(index_db_path=index_db_path, chunk_keys=cited_keys)
@@ -317,7 +321,7 @@ def validate_citations(
             )
             seen_sha_mismatch.add(citation.chunk_key)
 
-    return {
+    report = {
         "enabled": True,
         "strict": bool(strict),
         "require_in_snapshot": bool(require_in_snapshot),
@@ -340,17 +344,51 @@ def validate_citations(
             and (not require_in_snapshot or not not_in_snapshot)
         ),
     }
+    counts = citation_validation_counts(report)
+    _assert_citation_counts_consistent(report, counts)
+    report["counts"] = counts
+    return report
+
+
+def citation_validation_counts(report: Mapping[str, Any]) -> dict[str, int]:
+    return {
+        "missing": len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0),
+        "path_mismatches": len(list(report.get("path_mismatches") or [])),
+        "sha_mismatches": len(list(report.get("mismatched_sha") or [])),
+        "not_in_snapshot": len(list(report.get("not_in_snapshot_chunk_keys") or [])),
+    }
 
 
 def format_citation_validation_footer(report: Mapping[str, Any]) -> str:
-    missing = len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0)
-    path_mismatches = len(list(report.get("path_mismatches") or []))
-    sha_mismatches = len(list(report.get("mismatched_sha") or []))
-    not_in_snapshot = len(list(report.get("not_in_snapshot_chunk_keys") or []))
+    c = citation_validation_counts(report)
     return (
-        f"(missing={missing}, path_mismatches={path_mismatches}, "
-        f"sha_mismatches={sha_mismatches}, not_in_snapshot={not_in_snapshot})"
+        f"(missing={c['missing']}, path_mismatches={c['path_mismatches']}, "
+        f"sha_mismatches={c['sha_mismatches']}, not_in_snapshot={c['not_in_snapshot']})"
     )
+
+
+def _assert_citation_counts_consistent(report: Mapping[str, Any], counts: Mapping[str, int]) -> None:
+    expected_missing = len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0)
+    expected_path = len(list(report.get("path_mismatches") or []))
+    expected_sha = len(list(report.get("mismatched_sha") or []))
+    expected_snapshot = len(list(report.get("not_in_snapshot_chunk_keys") or []))
+    actual_missing = int(counts.get("missing", -1))
+    actual_path = int(counts.get("path_mismatches", -1))
+    actual_sha = int(counts.get("sha_mismatches", -1))
+    actual_snapshot = int(counts.get("not_in_snapshot", -1))
+    if (
+        actual_missing != expected_missing
+        or actual_path != expected_path
+        or actual_sha != expected_sha
+        or actual_snapshot != expected_snapshot
+    ):
+        raise ValueError(
+            "INTERNAL_CITATION_COUNTS_MISMATCH: "
+            f"expected(missing={expected_missing}, path_mismatches={expected_path}, "
+            f"sha_mismatches={expected_sha}, not_in_snapshot={expected_snapshot}) "
+            f"got(missing={actual_missing}, path_mismatches={actual_path}, "
+            f"sha_mismatches={actual_sha}, not_in_snapshot={actual_snapshot})"
+        )
 
 
 def _split_rel_and_heading(raw_path: str) -> tuple[str, str]:
