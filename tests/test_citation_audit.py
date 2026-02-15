@@ -272,6 +272,90 @@ class CitationAuditTests(unittest.TestCase):
             format_citation_validation_footer(report),
             "(missing=1, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",
         )
+        self.assertTrue(bool(report["all_citations_unparseable"]))
+
+    def test_citation_marker_counts_canonical(self) -> None:
+        key1 = "11111111111111111111111111111111"
+        key2 = "22222222222222222222222222222222"
+        key3 = "33333333333333333333333333333333"
+        sha1 = self._insert_chunk(chunk_key=key1, rel_path="a.md", heading_path="H1: A", text="a")
+        sha2 = self._insert_chunk(chunk_key=key2, rel_path="b.md", heading_path="H1: B", text="b")
+        sha3 = self._insert_chunk(chunk_key=key3, rel_path="c.md", heading_path="H1: C", text="c")
+        answer = (
+            f"[source: a.md#H1: A | {key1}] "
+            f"[source: b.md#H1: B | {key2}] "
+            f"[source: c.md#H1: C | {key3}]"
+        )
+        parsed = parse_citations(answer)
+        report = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key1: sha1, key2: sha2, key3: sha3},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            citation_markers_found=count_citation_markers(answer),
+        )
+        self.assertEqual(int(report["citation_markers_found"]), 3)
+        self.assertEqual(int(report["parsed_citations_count"]), 3)
+        self.assertEqual(int(report["unparseable_citations_count"]), 0)
+        self.assertFalse(bool(report["all_citations_unparseable"]))
+        self.assertEqual(
+            report["counts"]["missing"],
+            len(report["missing_chunk_keys"]),
+        )
+        self.assertEqual(
+            format_citation_validation_footer(report),
+            "(missing=0, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",
+        )
+
+    def test_citation_marker_counts_mixed_shape_drift(self) -> None:
+        key = "44444444444444444444444444444444"
+        sha = self._insert_chunk(chunk_key=key, rel_path="d.md", heading_path="H1: D", text="d")
+        answer = (
+            f"[source: d.md#H1: D | {key}] "
+            "[source: bad/path | H1: Bad] "
+            "[source: also/bad#H1: MissingKey | ]"
+        )
+        parsed = parse_citations(answer)
+        report = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={key: sha},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            citation_markers_found=count_citation_markers(answer),
+        )
+        self.assertEqual(int(report["citation_markers_found"]), 3)
+        self.assertEqual(int(report["parsed_citations_count"]), 1)
+        self.assertEqual(int(report["unparseable_citations_count"]), 2)
+        self.assertFalse(bool(report["all_citations_unparseable"]))
+        self.assertEqual(
+            format_citation_validation_footer(report),
+            "(missing=2, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",
+        )
+
+    def test_citation_marker_counts_all_malformed(self) -> None:
+        answer = "[source: bad/path | H1: Bad] then [source: still/bad | H2: Nope]"
+        parsed = parse_citations(answer)
+        report = validate_citations(
+            parsed_citations=parsed,
+            index_db_path=self.db_path,
+            retrieval_snapshot_sha_by_key={},
+            enabled=True,
+            strict=False,
+            require_in_snapshot=False,
+            citation_markers_found=count_citation_markers(answer),
+        )
+        self.assertEqual(int(report["citation_markers_found"]), 2)
+        self.assertEqual(int(report["parsed_citations_count"]), 0)
+        self.assertEqual(int(report["unparseable_citations_count"]), 2)
+        self.assertTrue(bool(report["all_citations_unparseable"]))
+        self.assertEqual(
+            format_citation_validation_footer(report),
+            "(missing=2, path_mismatches=0, sha_mismatches=0, not_in_snapshot=0)",
+        )
 
     def test_heading_normalization_allows_punctuation_variation(self) -> None:
         key = "cccccccccccccccccccccccccccccccc"

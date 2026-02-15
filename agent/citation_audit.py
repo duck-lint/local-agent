@@ -29,7 +29,6 @@ class ParsedCitation:
 _CITATION_PATTERN = re.compile(
     r"\[source:\s*(?P<path>[^|\]]+?)\s*\|\s*(?P<chunk_key>[0-9a-f]{32})\s*\]"
 )
-_CITATION_MARKER_PATTERN = re.compile(r"\[source:")
 
 
 def fetch_chunk_rows_for_keys(*, index_db_path: Path, chunk_keys: list[str]) -> dict[str, ChunkAuditRow]:
@@ -86,7 +85,7 @@ def parse_citations(answer: str) -> list[ParsedCitation]:
 
 
 def count_citation_markers(answer: str) -> int:
-    return len(_CITATION_MARKER_PATTERN.findall(answer or ""))
+    return (answer or "").count("[source:")
 
 
 def build_evidence_log_entries(
@@ -177,6 +176,7 @@ def validate_citations(
         else parsed_citations_count
     )
     unparseable_citations_count = max(0, marker_count - parsed_citations_count)
+    all_citations_unparseable = marker_count > 0 and parsed_citations_count == 0
     if not enabled:
         report = {
             "enabled": False,
@@ -188,6 +188,7 @@ def validate_citations(
             "parsed_citations_count": parsed_citations_count,
             "citation_markers_found": marker_count,
             "unparseable_citations_count": unparseable_citations_count,
+            "all_citations_unparseable": all_citations_unparseable,
             "not_in_snapshot_chunk_keys": [],
             "missing_chunk_keys": [],
             "mismatched_sha": [],
@@ -331,6 +332,7 @@ def validate_citations(
         "parsed_citations_count": parsed_citations_count,
         "citation_markers_found": marker_count,
         "unparseable_citations_count": unparseable_citations_count,
+        "all_citations_unparseable": all_citations_unparseable,
         "not_in_snapshot_chunk_keys": sorted(not_in_snapshot),
         "missing_chunk_keys": sorted(missing_keys),
         "mismatched_sha": mismatched_sha,
