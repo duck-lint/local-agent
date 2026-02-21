@@ -7,6 +7,7 @@ from typing import Iterable, Optional
 
 
 SCHEMA_VERSION = 1
+_SQLITE_IN_BATCH = 900
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -58,6 +59,15 @@ def init_db(db_path: Path) -> None:
             )
             conn.execute("PRAGMA user_version = 1")
             set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+        conn.executescript(
+            """
+            CREATE INDEX IF NOT EXISTS idx_embeddings_model ON embeddings(model_id);
+            CREATE INDEX IF NOT EXISTS idx_embeddings_preprocess ON embeddings(preprocess_sig);
+            CREATE INDEX IF NOT EXISTS idx_embeddings_dim ON embeddings(dim);
+            CREATE INDEX IF NOT EXISTS idx_embeddings_model_preprocess_dim
+            ON embeddings(model_id, preprocess_sig, dim);
+            """
+        )
         conn.commit()
 
 
@@ -126,13 +136,81 @@ def fetch_embeddings_map(conn: sqlite3.Connection, chunk_keys: Iterable[str]) ->
     keys = sorted(set(str(k) for k in chunk_keys if str(k)))
     if not keys:
         return {}
-    placeholders = ",".join("?" for _ in keys)
-    rows = conn.execute(
-        f"SELECT * FROM embeddings WHERE chunk_key IN ({placeholders})",
-        keys,
-    ).fetchall()
-    return {str(r["chunk_key"]): r for r in rows}
+    out: dict[str, sqlite3.Row] = {}
+    for batch in _batched(keys, size=_SQLITE_IN_BATCH):
+        placeholders = ",".join("?" for _ in batch)
+        rows = conn.execute(
+            f"SELECT * FROM embeddings WHERE chunk_key IN ({placeholders})",
+            batch,
+        ).fetchall()
+        for row in rows:
+            out[str(row["chunk_key"])] = row
+    return out
 
 
 def iter_embeddings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
     return list(conn.execute("SELECT * FROM embeddings ORDER BY chunk_key"))
+
+
+def populate_temp_chunk_keys(
+    conn: sqlite3.Connection,
+    chunk_keys: Iterable[str],
+    table_name: str = "tmp_phase2_chunk_keys",
+) -> str:
+    if not table_name or not table_name.replace("_", "").isalnum():
+        raise ValueError(f"Invalid temp table name: {table_name!r}")
+    conn.execute(f"CREATE TEMP TABLE IF NOT EXISTS {table_name}(chunk_key TEXT PRIMARY KEY)")
+    conn.execute(f"DELETE FROM {table_name}")
+    keys = sorted(set(str(k) for k in chunk_keys if str(k)))
+    for batch in _batched(keys, size=_SQLITE_IN_BATCH):
+        conn.executemany(
+            f"INSERT OR IGNORE INTO {table_name}(chunk_key) VALUES (?)",
+            [(k,) for k in batch],
+        )
+    return table_name
+
+
+def count_orphan_embeddings(conn: sqlite3.Connection, keep_chunk_keys: Iterable[str]) -> int:
+    temp_table = populate_temp_chunk_keys(conn, keep_chunk_keys)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM embeddings e
+        LEFT JOIN {temp_table} k ON k.chunk_key = e.chunk_key
+        WHERE k.chunk_key IS NULL
+        """
+    ).fetchone()
+    return int(row["c"]) if row is not None else 0
+
+
+def delete_orphan_embeddings(conn: sqlite3.Connection, keep_chunk_keys: Iterable[str]) -> int:
+    temp_table = populate_temp_chunk_keys(conn, keep_chunk_keys)
+    row = conn.execute(
+        f"""
+        SELECT COUNT(*) AS c
+        FROM embeddings e
+        LEFT JOIN {temp_table} k ON k.chunk_key = e.chunk_key
+        WHERE k.chunk_key IS NULL
+        """
+    ).fetchone()
+    count = int(row["c"]) if row is not None else 0
+    if count <= 0:
+        return 0
+    conn.execute(
+        f"""
+        DELETE FROM embeddings
+        WHERE chunk_key IN (
+            SELECT e.chunk_key
+            FROM embeddings e
+            LEFT JOIN {temp_table} k ON k.chunk_key = e.chunk_key
+            WHERE k.chunk_key IS NULL
+        )
+        """
+    )
+    return count
+
+
+def _batched(values: list[str], size: int = _SQLITE_IN_BATCH) -> Iterable[list[str]]:
+    batch_size = max(1, int(size))
+    for start in range(0, len(values), batch_size):
+        yield values[start : start + batch_size]

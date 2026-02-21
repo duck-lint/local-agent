@@ -212,6 +212,42 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         self.assertIn("DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING", failed_codes)
         self.assertEqual(int(summary["missing_embeddings"]), 0)
 
+    def test_doctor_flags_orphan_embeddings_in_require_phase3_mode(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+        )
+        embeddings_db = self.workroot / "embeddings" / "db" / "embeddings.sqlite"
+        with connect_embeddings_db(embeddings_db) as conn:
+            row = conn.execute(
+                "SELECT model_id, dim, preprocess_sig, vector FROM embeddings ORDER BY chunk_key LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            conn.execute(
+                """
+                INSERT INTO embeddings(chunk_key, embed_sig, model_id, dim, preprocess_sig, vector, embedded_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    "00000000000000000000000000000000",
+                    "orphan-embed-sig",
+                    str(row["model_id"]),
+                    int(row["dim"]),
+                    str(row["preprocess_sig"]),
+                    row["vector"],
+                    1234.0,
+                ),
+            )
+            conn.commit()
+
+        failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
+        self.assertIn("DOCTOR_EMBED_ORPHANS_REQUIRE_PHASE3", failed_codes)
+        self.assertGreater(int(summary["orphan_embeddings"]), 0)
+
     def test_doctor_detects_chunk_preprocess_sig_mismatch(self) -> None:
         bad_cfg = copy.deepcopy(self.cfg)
         bad_cfg["phase3"]["embed"]["chunk_preprocess_sig"] = "deadbeef"

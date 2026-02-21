@@ -53,6 +53,7 @@ Cross-platform:
 python -m agent chat "ping"
 python -m agent ask "Summarize the indexed notes about coherence."
 python -m agent embed --json
+python -m agent embed --no-prune --json
 python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
@@ -60,10 +61,13 @@ python -m agent doctor --require-phase3 --json
 local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
 local-agent embed --json
+local-agent embed --no-prune --json
 local-agent memory list --json
 local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
 ```
+
+`embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
 
 Torch-first phase3 flow:
 ```bash

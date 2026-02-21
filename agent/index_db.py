@@ -346,25 +346,46 @@ def prune_docs_not_in_source(
         conn.execute("DELETE FROM docs WHERE source_id = ?", (source_id,))
         return count
 
-    placeholders = ",".join("?" for _ in keep_rel_paths)
-    params = [source_id, *sorted(keep_rel_paths)]
+    conn.execute(
+        """
+        CREATE TEMP TABLE IF NOT EXISTS tmp_keep_rel_paths(
+            rel_path TEXT PRIMARY KEY
+        )
+        """
+    )
+    conn.execute("DELETE FROM tmp_keep_rel_paths")
+    keep_paths = sorted(str(p) for p in keep_rel_paths)
+    batch_size = 900
+    for start in range(0, len(keep_paths), batch_size):
+        batch = keep_paths[start : start + batch_size]
+        conn.executemany(
+            "INSERT OR IGNORE INTO tmp_keep_rel_paths(rel_path) VALUES (?)",
+            [(p,) for p in batch],
+        )
     row = conn.execute(
-        f"""
+        """
         SELECT COUNT(*) AS c
-        FROM docs
-        WHERE source_id = ?
-          AND rel_path NOT IN ({placeholders})
+        FROM docs d
+        LEFT JOIN tmp_keep_rel_paths k ON d.rel_path = k.rel_path
+        WHERE d.source_id = ?
+          AND k.rel_path IS NULL
         """,
-        params,
+        (source_id,),
     ).fetchone()
     count = int(row["c"]) if row is not None else 0
     conn.execute(
-        f"""
+        """
         DELETE FROM docs
         WHERE source_id = ?
-          AND rel_path NOT IN ({placeholders})
+          AND rel_path IN (
+              SELECT d.rel_path
+              FROM docs d
+              LEFT JOIN tmp_keep_rel_paths k ON d.rel_path = k.rel_path
+              WHERE d.source_id = ?
+                AND k.rel_path IS NULL
+          )
         """,
-        params,
+        (source_id, source_id),
     )
     return count
 

@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.index_db import connect_db, init_db
+from agent.index_db import connect_db, init_db, prune_docs_not_in_source
 from agent.indexer import SourceSpec, index_sources
 from agent.tools import configure_tool_security
 
@@ -414,6 +414,58 @@ class Phase2IndexingTests(unittest.TestCase):
         self.assertEqual(summary.errors, [])
         self.assertEqual(summary.docs_scanned, 1)
         self.assertEqual(summary.docs_changed, 1)
+
+    def test_prune_docs_not_in_source_handles_large_keep_set(self) -> None:
+        init_db(self.db_path)
+        with connect_db(self.db_path) as conn:
+            conn.execute(
+                "INSERT INTO sources(name, root, kind, created_at) VALUES (?, ?, ?, ?)",
+                ("corpus", str(self.corpus), "corpus", 1.0),
+            )
+            source_row = conn.execute("SELECT id FROM sources WHERE name = 'corpus'").fetchone()
+            self.assertIsNotNone(source_row)
+            source_id = int(source_row["id"])
+            conn.execute(
+                """
+                INSERT INTO docs(
+                    source_id, rel_path, abs_path, sha256, mtime, size, is_markdown,
+                    yaml_present, yaml_parse_ok, yaml_error, required_keys_present,
+                    frontmatter_json, discovered_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    "typed.md",
+                    str((self.corpus / "typed.md").resolve()),
+                    "sha",
+                    1.0,
+                    10,
+                    1,
+                    0,
+                    0,
+                    None,
+                    0,
+                    "{}",
+                    1.0,
+                    1.0,
+                ),
+            )
+            conn.commit()
+
+            keep_rel_paths = {"typed.md"}
+            keep_rel_paths.update({f"dummy_{i}.md" for i in range(1100)})
+            pruned = prune_docs_not_in_source(
+                conn,
+                source_id=source_id,
+                keep_rel_paths=keep_rel_paths,
+            )
+            self.assertEqual(pruned, 0)
+            remaining = conn.execute(
+                "SELECT COUNT(*) AS c FROM docs WHERE source_id = ? AND rel_path = 'typed.md'",
+                (source_id,),
+            ).fetchone()
+            self.assertIsNotNone(remaining)
+            self.assertEqual(int(remaining["c"]), 1)
 
 
 if __name__ == "__main__":

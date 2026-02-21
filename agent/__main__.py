@@ -24,6 +24,7 @@ from agent.citation_audit import (
 from agent.embedding_fingerprint import (
     compute_embed_sig,
 )
+from agent.embeddings_db import count_orphan_embeddings
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.embeddings_db import fetch_embeddings_map
 from agent.index_db import connect_db, get_meta, init_db, query_chunks_lexical
@@ -646,6 +647,7 @@ def collect_doctor_checks(
         "missing_embeddings": 0,
         "outdated_embeddings": 0,
         "dim_mismatch_embeddings": 0,
+        "orphan_embeddings": 0,
         "embed_provider": "",
         "embed_runtime_fingerprint_match": False,
         "embeddings_db_path": None,
@@ -976,6 +978,29 @@ def collect_doctor_checks(
                             ok=True,
                             error_code="DOCTOR_EMBED_DIM_MISMATCH_OK",
                             message="Embedding dimensions are consistent.",
+                        )
+                    )
+
+                orphan_embeddings = count_orphan_embeddings(embed_conn, phase2_chunk_map.keys())
+                phase3_summary["orphan_embeddings"] = orphan_embeddings
+                if require_phase3 and orphan_embeddings > 0:
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=False,
+                            error_code="DOCTOR_EMBED_ORPHANS_REQUIRE_PHASE3",
+                            message=(
+                                f"Orphan embeddings detected: {orphan_embeddings} rows are not present in "
+                                "phase2 chunks."
+                            ),
+                            suggested_fix="Run: python -m agent embed --json",
+                        )
+                    )
+                elif orphan_embeddings == 0:
+                    checks.append(
+                        DoctorCheckResult(
+                            ok=True,
+                            error_code="DOCTOR_EMBED_ORPHANS_OK",
+                            message="No orphan embeddings detected.",
                         )
                     )
                 embed_meta_ready = bool(schema_ok and meta_ok and embed_config_valid)
@@ -2498,6 +2523,7 @@ def run_embed(
     model_override: Optional[str] = None,
     rebuild: bool = False,
     batch_size_override: Optional[int] = None,
+    no_prune: bool = False,
     json_output: bool = False,
     limit: Optional[int] = None,
     dry_run: bool = False,
@@ -2527,6 +2553,7 @@ def run_embed(
             batch_size_override=batch_size_override,
             json_limit=limit,
             dry_run=dry_run,
+            prune_orphans=not no_prune,
             embedder_factory=embedder_factory,
         )
     except Exception as exc:
@@ -2553,6 +2580,10 @@ def run_embed(
             "dim": summary.dim,
             "total_chunks": summary.total_chunks,
             "existing_embeddings": summary.existing_embeddings,
+            "embeddings_total_before": summary.embeddings_total_before,
+            "embeddings_total_after": summary.embeddings_total_after,
+            "orphan_embeddings_before": summary.orphan_embeddings_before,
+            "orphan_embeddings_pruned": summary.orphan_embeddings_pruned,
             "missing": summary.missing,
             "outdated": summary.outdated,
             "embedded_written": summary.embedded_written,
@@ -2576,6 +2607,10 @@ def run_embed(
             f"query_preprocess_sig={summary.query_preprocess_sig}, "
             f"total_chunks={summary.total_chunks}, "
             f"existing_embeddings={summary.existing_embeddings}, "
+            f"embeddings_total_before={summary.embeddings_total_before}, "
+            f"embeddings_total_after={summary.embeddings_total_after}, "
+            f"orphan_embeddings_before={summary.orphan_embeddings_before}, "
+            f"orphan_embeddings_pruned={summary.orphan_embeddings_pruned}, "
             f"missing={summary.missing}, "
             f"outdated={summary.outdated}, "
             f"embedded_written={summary.embedded_written}, "
@@ -2810,8 +2845,9 @@ def run_ask_grounded(
         "run_id": run_dir.name,
         "mode": "ask",
         "question": question,
-        "raw_first_model": first_model,
+        "raw_first_model": None,
         "raw_second_model": second_model,
+        "model_used": second_model,
         "resolved_config_path": _path_to_str(resolved_config_path),
         "started_unix": started,
         "retrieval": None,
@@ -3172,6 +3208,11 @@ def main() -> int:
     p_embed.add_argument("--json", action="store_true", help="Emit machine-readable JSON summary.")
     p_embed.add_argument("--limit", type=int, default=None, help="Limit chunk rows processed (ordered by chunk_key).")
     p_embed.add_argument("--dry-run", action="store_true", help="Compute counts without writing embeddings.")
+    p_embed.add_argument(
+        "--no-prune",
+        action="store_true",
+        help="Do not prune orphan embeddings (default behavior prunes orphans).",
+    )
 
     p_memory = sub.add_parser("memory", help="Manage durable memory records.")
     memory_sub = p_memory.add_subparsers(dest="memory_cmd", required=True)
@@ -3298,6 +3339,7 @@ def main() -> int:
             model_override=getattr(args, "model", None),
             rebuild=bool(getattr(args, "rebuild", False)),
             batch_size_override=getattr(args, "batch_size", None),
+            no_prune=bool(getattr(args, "no_prune", False)),
             json_output=bool(getattr(args, "json", False)),
             limit=getattr(args, "limit", None),
             dry_run=bool(getattr(args, "dry_run", False)),

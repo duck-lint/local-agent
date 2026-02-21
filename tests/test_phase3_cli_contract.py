@@ -162,6 +162,10 @@ class Phase3CliContractTests(unittest.TestCase):
         )
         self.assertIn("total_chunks", payload)
         self.assertIn("embedded_written", payload)
+        self.assertIn("orphan_embeddings_before", payload)
+        self.assertIn("orphan_embeddings_pruned", payload)
+        self.assertIn("embeddings_total_before", payload)
+        self.assertIn("embeddings_total_after", payload)
 
         embeddings_db = Path(payload["embeddings_db"])
         with connect_embeddings_db(embeddings_db) as conn:
@@ -192,6 +196,7 @@ class Phase3CliContractTests(unittest.TestCase):
         self.assertIn("missing_embeddings", phase3)
         self.assertIn("outdated_embeddings", phase3)
         self.assertIn("embeddings_total", phase3)
+        self.assertIn("orphan_embeddings", phase3)
         self.assertIn("retrieval_smoke_ran", phase3)
         self.assertIn("retrieval_smoke_ok", phase3)
         self.assertIn("retrieval_smoke_reason", phase3)

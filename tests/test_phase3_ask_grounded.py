@@ -255,6 +255,9 @@ class Phase3AskGroundedTests(unittest.TestCase):
         output = buffer.getvalue()
         self.assertIn("Insufficient citation-grounded answer", output)
         self.assertIn("[source: a.md#H2: Alpha | 0123456789abcdef0123456789abcdef]", output)
+        record = self._latest_run_record()
+        self.assertIsNone(record.get("raw_first_model"))
+        self.assertEqual(record.get("raw_second_model"), record.get("model_used"))
 
     @patch("agent.__main__.ensure_ollama_up")
     @patch("agent.__main__.create_embedder")

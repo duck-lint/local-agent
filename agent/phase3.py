@@ -17,8 +17,10 @@ from agent.embedder import Embedder
 from agent.embedders.ollama import OllamaEmbedder
 from agent.embedders.torch_embedder import TorchEmbedder
 from agent.embeddings_db import (
+    count_orphan_embeddings,
     connect_db as connect_embeddings_db,
     count_embeddings,
+    delete_orphan_embeddings,
     fetch_embeddings_map,
     get_meta as get_embeddings_meta,
     init_db as init_embeddings_db,
@@ -86,6 +88,10 @@ DEFAULT_PHASE3: dict[str, Any] = {
 class EmbedSummary:
     total_chunks: int
     existing_embeddings: int
+    embeddings_total_before: int
+    embeddings_total_after: int
+    orphan_embeddings_before: int
+    orphan_embeddings_pruned: int
     missing: int
     outdated: int
     embedded_written: int
@@ -400,6 +406,7 @@ def run_embed_phase(
     batch_size_override: Optional[int] = None,
     json_limit: Optional[int] = None,
     dry_run: bool = False,
+    prune_orphans: bool = True,
     embedder_factory: Optional[Callable[[str, str, str, int], Any]] = None,
 ) -> EmbedSummary:
     ensure_phase3_dirs(security_root)
@@ -416,10 +423,36 @@ def run_embed_phase(
     embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, security_root)
     init_embeddings_db(embeddings_db_path)
 
+    phase2_chunk_keys = [chunk["chunk_key"] for chunk in chunks]
+    existing_rows: dict[str, Any] = {}
+    existing_embeddings = 0
+    embeddings_total_before = 0
+    embeddings_total_after = 0
+    orphan_embeddings_before = 0
+    orphan_embeddings_pruned = 0
+    stored_provider: Optional[str] = None
+    stored_runtime: Optional[str] = None
+
+    with connect_embeddings_db(embeddings_db_path) as embed_conn:
+        embeddings_total_before = count_embeddings(embed_conn)
+        orphan_embeddings_before = count_orphan_embeddings(embed_conn, phase2_chunk_keys)
+        stored_provider = get_embeddings_meta(embed_conn, "embed_provider")
+        stored_runtime = get_embeddings_meta(embed_conn, "embed_runtime_fingerprint")
+        embeddings_total_after = embeddings_total_before
+
     if total_chunks == 0:
+        if prune_orphans and not dry_run:
+            with connect_embeddings_db(embeddings_db_path) as embed_conn:
+                orphan_embeddings_pruned = delete_orphan_embeddings(embed_conn, phase2_chunk_keys)
+                embeddings_total_after = count_embeddings(embed_conn)
+                embed_conn.commit()
         return EmbedSummary(
             total_chunks=0,
             existing_embeddings=0,
+            embeddings_total_before=embeddings_total_before,
+            embeddings_total_after=embeddings_total_after,
+            orphan_embeddings_before=orphan_embeddings_before,
+            orphan_embeddings_pruned=orphan_embeddings_pruned,
             missing=0,
             outdated=0,
             embedded_written=0,
@@ -460,22 +493,25 @@ def run_embed_phase(
     if dim <= 0:
         raise ValueError("Embedding dimension must be > 0")
 
+    if embeddings_total_before > 0 and not rebuild:
+        if stored_provider and stored_provider != provider:
+            raise RuntimeError(
+                "Embedding provider changed; run `local-agent embed --rebuild` to refresh embeddings "
+                f"(stored={stored_provider}, current={provider})."
+            )
+        if stored_runtime and runtime_fingerprint and stored_runtime != runtime_fingerprint:
+            raise RuntimeError(
+                "Embedding runtime changed; run `local-agent embed --rebuild` to refresh embeddings "
+                "(embed_runtime_fingerprint mismatch)."
+            )
+
     with connect_embeddings_db(embeddings_db_path) as embed_conn:
-        existing_rows = fetch_embeddings_map(embed_conn, [chunk["chunk_key"] for chunk in chunks])
+        if prune_orphans and not dry_run:
+            orphan_embeddings_pruned = delete_orphan_embeddings(embed_conn, phase2_chunk_keys)
+        embeddings_total_after = count_embeddings(embed_conn)
+        existing_rows = fetch_embeddings_map(embed_conn, phase2_chunk_keys)
         existing_embeddings = len(existing_rows)
-        stored_provider = get_embeddings_meta(embed_conn, "embed_provider")
-        stored_runtime = get_embeddings_meta(embed_conn, "embed_runtime_fingerprint")
-        if existing_embeddings > 0 and not rebuild:
-            if stored_provider and stored_provider != provider:
-                raise RuntimeError(
-                    "Embedding provider changed; run `local-agent embed --rebuild` to refresh embeddings "
-                    f"(stored={stored_provider}, current={provider})."
-                )
-            if stored_runtime and runtime_fingerprint and stored_runtime != runtime_fingerprint:
-                raise RuntimeError(
-                    "Embedding runtime changed; run `local-agent embed --rebuild` to refresh embeddings "
-                    "(embed_runtime_fingerprint mismatch)."
-                )
+        embed_conn.commit()
 
     to_process, missing, outdated, skipped_ok = summarize_embedding_drift(
         chunks=chunks,
@@ -490,6 +526,10 @@ def run_embed_phase(
         return EmbedSummary(
             total_chunks=total_chunks,
             existing_embeddings=existing_embeddings,
+            embeddings_total_before=embeddings_total_before,
+            embeddings_total_after=embeddings_total_after,
+            orphan_embeddings_before=orphan_embeddings_before,
+            orphan_embeddings_pruned=orphan_embeddings_pruned,
             missing=missing,
             outdated=outdated,
             embedded_written=0,
@@ -596,11 +636,16 @@ def run_embed_phase(
                 verified += 1
         if verified != len(to_process):
             raise RuntimeError(f"Embedding write verification failed (verified={verified}, expected={len(to_process)})")
+        embeddings_total_after = count_embeddings(embed_conn)
         embed_conn.commit()
 
     return EmbedSummary(
         total_chunks=total_chunks,
         existing_embeddings=existing_embeddings,
+        embeddings_total_before=embeddings_total_before,
+        embeddings_total_after=embeddings_total_after,
+        orphan_embeddings_before=orphan_embeddings_before,
+        orphan_embeddings_pruned=orphan_embeddings_pruned,
         missing=missing,
         outdated=outdated,
         embedded_written=written,

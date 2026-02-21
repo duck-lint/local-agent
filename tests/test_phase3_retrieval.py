@@ -14,6 +14,7 @@ from agent.embedding_fingerprint import (
     compute_query_preprocess_sig,
     normalize_vector,
     pack_vector_f32_le,
+    preprocess_query_text,
 )
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.embeddings_db import init_db as init_embeddings_db
@@ -346,6 +347,100 @@ class Phase3RetrievalTests(unittest.TestCase):
             )
         self.assertEqual(scored_count, 1)
         self.assertEqual([k for _, k in ranked], ["k1"])
+
+    def test_orphan_embedding_filtered_and_no_blank_provenance(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        embeddings_db_path = (self.workroot / phase3_cfg["embeddings_db_path"]).resolve()
+        query = "coherence token"
+        query_input = preprocess_query_text(query=query, preprocess_name=self.preprocess_name)
+        query_vec = normalize_vector(_DummyEmbedder().embed_texts([query_input])[0])
+        orphan_key = "00000000000000000000000000000000"
+
+        with connect_embeddings_db(embeddings_db_path) as conn:
+            upsert_embedding(
+                conn,
+                chunk_key=orphan_key,
+                embed_sig=compute_embed_sig(
+                    chunk_key=orphan_key,
+                    chunk_sha="orphan-sha",
+                    model_id=phase3_cfg["embed"]["model_id"],
+                    dim=len(query_vec),
+                    chunk_preprocess_sig=self.chunk_pre_sig,
+                ),
+                model_id=phase3_cfg["embed"]["model_id"],
+                dim=len(query_vec),
+                preprocess_sig=self.chunk_pre_sig,
+                vector_blob=pack_vector_f32_le(query_vec),
+            )
+            conn.commit()
+
+        result = retrieve(
+            query,
+            index_db_path=self.phase2_db,
+            embeddings_db_path=embeddings_db_path,
+            embedder=_DummyEmbedder(),
+            embed_model_id=phase3_cfg["embed"]["model_id"],
+            preprocess_name=self.preprocess_name,
+            chunk_preprocess_sig=self.chunk_pre_sig,
+            query_preprocess_sig=self.query_pre_sig,
+            lexical_k=5,
+            vector_k=5,
+            vector_fetch_k=10,
+            rel_path_prefix="",
+            fusion="simple_union",
+        )
+        self.assertNotIn(orphan_key, [item.chunk_key for item in result.candidates])
+        self.assertGreater(result.vector_candidates_prefilter, result.vector_candidates_postfilter)
+        self.assertIn("dropped orphan vector candidates", result.vector_filter_warning)
+        for candidate in result.candidates:
+            self.assertTrue(candidate.rel_path)
+            self.assertTrue(candidate.text)
+
+    def test_vector_tie_breaker_keeps_lexicographically_smallest_keys(self) -> None:
+        embed_db = self.workroot / "embeddings" / "db" / "tie.sqlite"
+        init_embeddings_db(embed_db)
+        tie_keys = [
+            "00000000000000000000000000000003",
+            "00000000000000000000000000000001",
+            "00000000000000000000000000000002",
+        ]
+        with connect_embeddings_db(embed_db) as conn:
+            set_embeddings_meta(conn, "vectors_normalized", "1")
+            for key in tie_keys:
+                upsert_embedding(
+                    conn,
+                    chunk_key=key,
+                    embed_sig=compute_embed_sig(
+                        chunk_key=key,
+                        chunk_sha=f"sha-{key}",
+                        model_id="m",
+                        dim=2,
+                        chunk_preprocess_sig=self.chunk_pre_sig,
+                    ),
+                    model_id="m",
+                    dim=2,
+                    preprocess_sig=self.chunk_pre_sig,
+                    vector_blob=pack_vector_f32_le([1.0, 0.0]),
+                )
+            conn.commit()
+
+        ranked, scored_count, vectors_normalized = _compute_vector_candidates(
+            embeddings_db_path=embed_db,
+            query_vector=[1.0, 0.0],
+            query_dim=2,
+            model_id="m",
+            chunk_preprocess_sig=self.chunk_pre_sig,
+            fetch_k=2,
+        )
+        self.assertEqual(scored_count, 3)
+        self.assertTrue(vectors_normalized)
+        self.assertEqual(
+            [k for _, k in ranked],
+            [
+                "00000000000000000000000000000001",
+                "00000000000000000000000000000002",
+            ],
+        )
 
 
 if __name__ == "__main__":

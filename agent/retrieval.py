@@ -120,17 +120,26 @@ def retrieve(
     )
     prefilter_count = len(scored)
 
-    filtered_scored = scored
-    filter_warning = ""
-    if prefix_applied and scored:
-        metadata_rows = _fetch_chunk_metadata(index_db_path=index_db_path, chunk_keys=[key for _, key in scored])
+    metadata_rows = (
+        _fetch_chunk_metadata(index_db_path=index_db_path, chunk_keys=[key for _, key in scored])
+        if scored
+        else {}
+    )
+    filtered_scored = [(score, key) for score, key in scored if key in metadata_rows]
+    orphan_dropped = prefilter_count - len(filtered_scored)
+
+    warning_parts: list[str] = []
+    if prefix_applied and filtered_scored:
         allowed = {key for key, row in metadata_rows.items() if row["rel_path"].replace("\\", "/").startswith(prefix)}
-        filtered_scored = [(score, key) for score, key in scored if key in allowed]
+        filtered_scored = [(score, key) for score, key in filtered_scored if key in allowed]
         if len(filtered_scored) < vector_limit:
-            filter_warning = (
+            warning_parts.append(
                 f"rel_path_prefix reduced vector results: {len(filtered_scored)}/{vector_limit} "
                 f"(fetched {fetch_k_used})"
             )
+    if orphan_dropped > 0:
+        warning_parts.append(f"dropped orphan vector candidates: {orphan_dropped}")
+    filter_warning = "; ".join(warning_parts)
     vector_top = filtered_scored[:vector_limit]
     vector_ranked = {chunk_key: (score + 1.0) / 2.0 for score, chunk_key in vector_top}
 
@@ -170,7 +179,8 @@ def _compute_vector_candidates(
     chunk_preprocess_sig: str,
     fetch_k: int,
 ) -> tuple[list[tuple[float, str]], int, bool]:
-    scored_heap: list[tuple[float, str]] = []
+    fetch_limit = max(1, int(fetch_k))
+    scored_heap: list[tuple[float, str, str]] = []
     scored_count = 0
     vector_normalized = True
 
@@ -187,18 +197,16 @@ def _compute_vector_candidates(
         vectors_normalized_meta = str(vectors_row["value"]) if vectors_row is not None else "0"
         vector_normalized = vectors_normalized_meta == "1"
         rows = embed_conn.execute(
-            "SELECT chunk_key, model_id, dim, preprocess_sig, vector FROM embeddings"
+            """
+            SELECT chunk_key, vector
+            FROM embeddings
+            WHERE model_id = ? AND preprocess_sig = ? AND dim = ?
+            """,
+            (model_id, chunk_preprocess_sig, int(query_dim)),
         )
         for row in rows:
-            if str(row["model_id"]) != model_id:
-                continue
-            if str(row["preprocess_sig"]) != chunk_preprocess_sig:
-                continue
-            dim = int(row["dim"])
-            if dim != query_dim:
-                continue
             blob = bytes(row["vector"])
-            if len(blob) != dim * 4:
+            if len(blob) != query_dim * 4:
                 continue
             if q_np is not None and _np is not None:
                 vec_np = _np.frombuffer(blob, dtype=_np.float32)
@@ -217,13 +225,14 @@ def _compute_vector_candidates(
             if not math.isfinite(score):
                 continue
             scored_count += 1
-            pair = (score, str(row["chunk_key"]))
-            if len(scored_heap) < fetch_k:
+            chunk_key = str(row["chunk_key"])
+            pair = (score, _reverse_chunk_key(chunk_key), chunk_key)
+            if len(scored_heap) < fetch_limit:
                 heapq.heappush(scored_heap, pair)
             else:
-                if pair[0] > scored_heap[0][0] or (pair[0] == scored_heap[0][0] and pair[1] < scored_heap[0][1]):
+                if pair > scored_heap[0]:
                     heapq.heapreplace(scored_heap, pair)
-    ranked = sorted(scored_heap, key=lambda item: (-item[0], item[1]))
+    ranked = sorted([(score, chunk_key) for score, _, chunk_key in scored_heap], key=lambda item: (-item[0], item[1]))
     return ranked, scored_count, vector_normalized
 
 
@@ -280,6 +289,8 @@ def _fuse_candidates(
             merged_score = vec
 
         meta = fetched.get(chunk_key) or lexical_meta.get(chunk_key) or {}
+        if not meta and lex <= 0.0:
+            continue
         out.append(
             RetrievedChunk(
                 chunk_key=chunk_key,
@@ -323,3 +334,30 @@ def _l2_norm_arr(values: array) -> float:
     for value in values:
         total += value * value
     return math.sqrt(total)
+
+
+def _reverse_chunk_key(chunk_key: str) -> str:
+    if not chunk_key:
+        return ""
+    lowered = chunk_key.lower()
+    if all(ch in "0123456789abcdef" for ch in lowered):
+        complement = {
+            "0": "f",
+            "1": "e",
+            "2": "d",
+            "3": "c",
+            "4": "b",
+            "5": "a",
+            "6": "9",
+            "7": "8",
+            "8": "7",
+            "9": "6",
+            "a": "5",
+            "b": "4",
+            "c": "3",
+            "d": "2",
+            "e": "1",
+            "f": "0",
+        }
+        return "".join(complement[ch] for ch in lowered)
+    return bytes(255 - b for b in chunk_key.encode("utf-8", errors="replace")).decode("latin1")

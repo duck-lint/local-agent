@@ -402,8 +402,11 @@ If model files are unavailable locally, embed fails closed with `PHASE3_EMBED_ER
 Embed corpus chunks from phase2 index:
 
 ```bash
-local-agent embed [--model <id>] [--rebuild] [--batch-size N] [--limit N] [--dry-run] [--json]
+local-agent embed [--model <id>] [--rebuild] [--batch-size N] [--limit N] [--dry-run] [--no-prune] [--json]
 ```
+
+By default, `local-agent embed` prunes orphan embeddings (rows not present in current phase2 chunk keys).
+To disable pruning for a run, use `local-agent embed --no-prune`.
 
 Doctor phase3 readiness (strict mode):
 
