@@ -204,6 +204,125 @@ class Phase2IndexingTests(unittest.TestCase):
             self.assertIsNotNone(row)
             self.assertEqual(int(row["c"]), 0)
 
+    def test_frontmatter_and_heading_only_docs_are_pruned_as_non_indexable(self) -> None:
+        (self.corpus / "frontmatter_only.md").write_text(
+            "---\n"
+            "uuid: 223e4567-e89b-12d3-a456-426614174001\n"
+            "note_version: v0.1.3\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        (self.corpus / "heading_only.md").write_text(
+            "# Template Heading\n\n## Placeholder Section\n",
+            encoding="utf-8",
+        )
+
+        summary = index_sources(
+            db_path=self.db_path,
+            source_specs=self.sources,
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=80,
+            overlap=20,
+        )
+        self.assertEqual(summary.errors, [])
+        self.assertGreaterEqual(summary.docs_pruned, 2)
+
+        with connect_db(self.db_path) as conn:
+            rows = list(
+                conn.execute(
+                    """
+                    SELECT rel_path
+                    FROM docs
+                    WHERE rel_path IN ('frontmatter_only.md', 'heading_only.md')
+                    """
+                )
+            )
+            self.assertEqual(rows, [])
+
+            chunkless_docs = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM docs d
+                LEFT JOIN chunks ch ON ch.doc_id = d.id
+                WHERE ch.id IS NULL
+                """
+            ).fetchone()
+            self.assertIsNotNone(chunkless_docs)
+            self.assertEqual(int(chunkless_docs["c"]), 0)
+
+    def test_contentful_to_non_indexable_transition_leaves_no_orphan_chunks(self) -> None:
+        note_path = self.corpus / "note.md"
+        note_path.write_text(
+            "---\n"
+            "uuid: 323e4567-e89b-12d3-a456-426614174002\n"
+            "note_version: v0.1.3\n"
+            "---\n"
+            "\n"
+            "Body text that should produce at least one chunk.\n",
+            encoding="utf-8",
+        )
+
+        first = index_sources(
+            db_path=self.db_path,
+            source_specs=self.sources,
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=80,
+            overlap=20,
+        )
+        self.assertEqual(first.errors, [])
+
+        with connect_db(self.db_path) as conn:
+            doc_row = conn.execute(
+                "SELECT id FROM docs WHERE rel_path = 'note.md'"
+            ).fetchone()
+            self.assertIsNotNone(doc_row)
+            doc_id = int(doc_row["id"])
+            chunk_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM chunks WHERE doc_id = ?",
+                (doc_id,),
+            ).fetchone()
+            self.assertIsNotNone(chunk_row)
+            self.assertGreater(int(chunk_row["c"]), 0)
+
+        note_path.write_text(
+            "---\n"
+            "uuid: 323e4567-e89b-12d3-a456-426614174002\n"
+            "note_version: v0.1.3\n"
+            "---\n",
+            encoding="utf-8",
+        )
+
+        second = index_sources(
+            db_path=self.db_path,
+            source_specs=self.sources,
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=80,
+            overlap=20,
+        )
+        self.assertEqual(second.errors, [])
+        self.assertGreaterEqual(second.docs_pruned, 1)
+
+        with connect_db(self.db_path) as conn:
+            docs_row = conn.execute(
+                "SELECT COUNT(*) AS c FROM docs WHERE rel_path = 'note.md'"
+            ).fetchone()
+            self.assertIsNotNone(docs_row)
+            self.assertEqual(int(docs_row["c"]), 0)
+
+            orphan_chunks = conn.execute(
+                """
+                SELECT COUNT(*) AS c
+                FROM chunks ch
+                LEFT JOIN docs d ON d.id = ch.doc_id
+                WHERE d.id IS NULL
+                """
+            ).fetchone()
+            self.assertIsNotNone(orphan_chunks)
+            self.assertEqual(int(orphan_chunks["c"]), 0)
+
     def test_db_migration_v3_adds_chunk_columns_and_meta_table(self) -> None:
         legacy_db = self.workroot / "index" / "legacy.sqlite"
         legacy_db.parent.mkdir(parents=True, exist_ok=True)

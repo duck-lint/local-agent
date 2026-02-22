@@ -445,6 +445,33 @@ def collect_doctor_checks(
                     """
                 ).fetchall()
                 docs_without_chunk_samples = [str(r["rel_path"]) for r in docs_without_chunk_rows]
+                orphan_chunks_row = conn.execute(
+                    """
+                    SELECT COUNT(*) AS c
+                    FROM chunks ch
+                    LEFT JOIN docs d ON d.id = ch.doc_id
+                    WHERE d.id IS NULL
+                    """
+                ).fetchone()
+                orphan_chunks_without_docs = (
+                    int(orphan_chunks_row["c"]) if orphan_chunks_row is not None else 0
+                )
+                orphan_chunk_samples: list[tuple[int, int]] = []
+                if orphan_chunks_without_docs > 0:
+                    orphan_sample_rows = conn.execute(
+                        """
+                        SELECT ch.id AS chunk_id, ch.doc_id AS doc_id
+                        FROM chunks ch
+                        LEFT JOIN docs d ON d.id = ch.doc_id
+                        WHERE d.id IS NULL
+                        ORDER BY ch.id
+                        LIMIT 5
+                        """
+                    ).fetchall()
+                    orphan_chunk_samples = [
+                        (int(r["chunk_id"]), int(r["doc_id"]))
+                        for r in orphan_sample_rows
+                    ]
                 missing_key_row = conn.execute(
                     "SELECT COUNT(*) AS c FROM chunks WHERE chunk_key IS NULL OR trim(chunk_key) = ''"
                 ).fetchone()
@@ -524,6 +551,34 @@ def collect_doctor_checks(
                         ok=True,
                         error_code="DOCTOR_DOCS_WITHOUT_CHUNKS_OK",
                         message="All docs have at least one chunk.",
+                    )
+                )
+
+            if orphan_chunks_without_docs > 0:
+                examples = ", ".join(
+                    f"(chunk_id={chunk_id}, doc_id={doc_id})"
+                    for chunk_id, doc_id in orphan_chunk_samples
+                )
+                checks.append(
+                    DoctorCheckResult(
+                        ok=False,
+                        error_code="DOCTOR_CHUNKS_WITHOUT_DOCS",
+                        message=(
+                            "DB integrity drift: "
+                            f"{orphan_chunks_without_docs} chunks reference missing docs. "
+                            f"DB: {db_path}. "
+                            f"Examples: [{examples}]. "
+                            "Ensure all writes go through connect_db (foreign_keys=ON). Rebuild index."
+                        ),
+                        suggested_fix="Run: python -m agent index --rebuild --json",
+                    )
+                )
+            else:
+                checks.append(
+                    DoctorCheckResult(
+                        ok=True,
+                        error_code="DOCTOR_CHUNKS_WITHOUT_DOCS_OK",
+                        message="No orphan chunks detected.",
                     )
                 )
 

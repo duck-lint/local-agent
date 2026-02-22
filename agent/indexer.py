@@ -470,6 +470,16 @@ def index_sources(
                             max_chars=max_chars,
                             overlap=overlap,
                         )
+                    if not chunks:
+                        try:
+                            # Fail-closed: non-indexable docs must not persist as chunkless rows.
+                            conn.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+                            docs_pruned += 1
+                        except Exception as exc:
+                            errors.append(
+                                f"{source.name}:{rel_path}: failed to prune non-indexable doc: {exc}"
+                            )
+                        continue
                     try:
                         written = replace_doc_chunks(
                             conn,

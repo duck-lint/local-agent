@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -103,6 +104,41 @@ class DoctorChecksTests(unittest.TestCase):
         failures = [c for c in checks if not c.ok]
         self.assertEqual(failures, [])
 
+    def test_collect_doctor_checks_omits_chunkless_failure_for_non_indexable_docs(self) -> None:
+        (self.corpus / "frontmatter_only.md").write_text(
+            "---\n"
+            "uuid: b\n"
+            "---\n",
+            encoding="utf-8",
+        )
+        (self.corpus / "heading_only.md").write_text(
+            "# Template Heading\n\n## Placeholder Section\n",
+            encoding="utf-8",
+        )
+        summary = index_sources(
+            db_path=self.db_path,
+            source_specs=[
+                SourceSpec(name="corpus", root="allowed/corpus/", kind="corpus"),
+                SourceSpec(name="scratch", root="allowed/scratch/", kind="scratch"),
+            ],
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=120,
+            overlap=20,
+        )
+        self.assertEqual(summary.errors, [])
+
+        checks = collect_doctor_checks(
+            deep_merge_config({}, self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+        )
+        failure_codes = {c.error_code for c in checks if not c.ok}
+        ok_codes = {c.error_code for c in checks if c.ok}
+        self.assertNotIn("DOCTOR_DOCS_WITHOUT_CHUNKS", failure_codes)
+        self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS_OK", ok_codes)
+
     def test_collect_doctor_checks_detects_missing_chunk_key(self) -> None:
         with connect_db(self.db_path) as conn:
             conn.execute("UPDATE chunks SET chunk_key = NULL")
@@ -171,6 +207,81 @@ class DoctorChecksTests(unittest.TestCase):
         )
         failure_codes = {c.error_code for c in checks if not c.ok}
         self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS", failure_codes)
+
+    def test_collect_doctor_checks_detects_orphan_chunks(self) -> None:
+        conn = sqlite3.connect(str(self.db_path))
+        try:
+            cur = conn.cursor()
+            row = cur.execute("PRAGMA foreign_keys").fetchone()
+            self.assertIsNotNone(row)
+            self.assertEqual(int(row[0]), 0)
+
+            source_row = cur.execute("SELECT id FROM sources ORDER BY id LIMIT 1").fetchone()
+            self.assertIsNotNone(source_row)
+            source_id = int(source_row[0])
+
+            cur.execute(
+                """
+                INSERT INTO docs(
+                    source_id, rel_path, abs_path, sha256, mtime, size, is_markdown,
+                    frontmatter_json, discovered_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    source_id,
+                    "manual_orphan_raw.md",
+                    str((self.corpus / "manual_orphan_raw.md").resolve()),
+                    "f" * 64,
+                    1.0,
+                    1,
+                    1,
+                    "{}",
+                    1.0,
+                    1.0,
+                ),
+            )
+            doc_id = int(cur.lastrowid)
+            cur.execute(
+                """
+                INSERT INTO chunks(
+                    doc_id, chunk_index, start_char, end_char, text, sha256,
+                    scheme, heading_path, chunk_key, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    doc_id,
+                    0,
+                    0,
+                    4,
+                    "test",
+                    "e" * 64,
+                    "obsidian_v1",
+                    "",
+                    "a" * 32,
+                    1.0,
+                ),
+            )
+            cur.execute("DELETE FROM docs WHERE id = ?", (doc_id,))
+            conn.commit()
+        finally:
+            conn.close()
+
+        checks = collect_doctor_checks(
+            deep_merge_config({}, self.cfg),
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+        )
+        failed = [c for c in checks if not c.ok]
+        failure_codes = {c.error_code for c in failed}
+        ok_codes = {c.error_code for c in checks if c.ok}
+        self.assertIn("DOCTOR_CHUNKS_WITHOUT_DOCS", failure_codes)
+        self.assertNotIn("DOCTOR_CHUNKS_WITHOUT_DOCS_OK", ok_codes)
+        orphan_check = next(c for c in failed if c.error_code == "DOCTOR_CHUNKS_WITHOUT_DOCS")
+        self.assertIn("1 chunks reference missing docs", orphan_check.message)
+        self.assertIn("DB:", orphan_check.message)
+        self.assertIn("index.sqlite", orphan_check.message)
+        self.assertIn("Examples:", orphan_check.message)
 
     def test_collect_doctor_checks_detects_chunker_sig_mismatch(self) -> None:
         with connect_db(self.db_path) as conn:

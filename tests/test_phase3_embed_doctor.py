@@ -2,6 +2,7 @@
 
 import copy
 import hashlib
+import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
@@ -14,7 +15,7 @@ from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
 from agent.memory_db import connect_db as connect_memory_db
 from agent.memory_db import init_db as init_memory_db
-from agent.phase3 import build_phase3_cfg, run_embed_phase
+from agent.phase3 import build_phase3_cfg, resolve_embeddings_db_path, run_embed_phase
 from agent.retrieval import RetrievalResult, RetrievedChunk
 from agent.tools import configure_tool_security
 
@@ -206,6 +207,109 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
         self.assertEqual(failed_codes, [])
         self.assertEqual(int(summary["outdated_embeddings"]), 0)
+
+    def test_doctor_is_stable_after_index_and_embed_runs(self) -> None:
+        rebuild_summary = index_sources(
+            db_path=self.db_path,
+            source_specs=[
+                SourceSpec(name="corpus", root="allowed/corpus/", kind="corpus"),
+                SourceSpec(name="scratch", root="allowed/scratch/", kind="scratch"),
+            ],
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=120,
+            overlap=20,
+            force_rebuild=True,
+        )
+        self.assertEqual(rebuild_summary.errors, [])
+        self.assertGreater(int(rebuild_summary.total_chunks), 0)
+
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_dummy_factory,
+            rebuild=True,
+        )
+        embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, self.workroot)
+        conn = sqlite3.connect(str(embeddings_db_path))
+        try:
+            row = conn.execute(
+                "SELECT model_id, preprocess_sig, dim FROM embeddings LIMIT 1"
+            ).fetchone()
+            self.assertIsNotNone(row)
+            model_id, preprocess_sig, dim = row
+            plan_rows = conn.execute(
+                "EXPLAIN QUERY PLAN "
+                "SELECT chunk_key, vector FROM embeddings "
+                "WHERE model_id=? AND preprocess_sig=? AND dim=?",
+                (model_id, preprocess_sig, dim),
+            ).fetchall()
+        finally:
+            conn.close()
+        plan_text = "\n".join(" ".join(map(str, plan_row)) for plan_row in plan_rows).lower()
+        self.assertIn("idx_embeddings_model_preprocess_dim", plan_text)
+
+        def _snapshot() -> tuple[set[str], dict[str, int]]:
+            summary: dict = {}
+            checks = collect_doctor_checks(
+                copy.deepcopy(self.cfg),
+                resolved_config_path=self.config_path,
+                roots=self.roots,
+                check_ollama=False,
+                require_phase3=True,
+                phase3_summary_out=summary,
+            )
+            failed_codes = [check.error_code for check in checks if not check.ok]
+            self.assertEqual(failed_codes, [])
+            ok_codes = {check.error_code for check in checks if check.ok}
+            self.assertIn("DOCTOR_EMBED_ORPHANS_OK", ok_codes)
+            self.assertIn("DOCTOR_CHUNKS_WITHOUT_DOCS_OK", ok_codes)
+            self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS_OK", ok_codes)
+            stable = {
+                "orphan_embeddings": int(summary.get("orphan_embeddings", -1)),
+                "missing_embeddings": int(summary.get("missing_embeddings", -1)),
+                "outdated_embeddings": int(summary.get("outdated_embeddings", -1)),
+            }
+            self.assertEqual(stable["orphan_embeddings"], 0)
+            self.assertEqual(stable["missing_embeddings"], 0)
+            self.assertEqual(stable["outdated_embeddings"], 0)
+            return ok_codes, stable
+
+        ok_codes_1, stable_1 = _snapshot()
+        ok_codes_2, stable_2 = _snapshot()
+        self.assertEqual(ok_codes_1, ok_codes_2)
+        self.assertEqual(stable_1, stable_2)
+
+        incremental_summary = index_sources(
+            db_path=self.db_path,
+            source_specs=[
+                SourceSpec(name="corpus", root="allowed/corpus/", kind="corpus"),
+                SourceSpec(name="scratch", root="allowed/scratch/", kind="scratch"),
+            ],
+            security_root=self.workroot,
+            scheme="obsidian_v1",
+            max_chars=120,
+            overlap=20,
+        )
+        self.assertEqual(incremental_summary.errors, [])
+
+        ok_codes_3, stable_3 = _snapshot()
+        self.assertEqual(ok_codes_1, ok_codes_3)
+        self.assertEqual(stable_1, stable_3)
+
+        run_embed_phase(
+            cfg=self.cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=build_phase3_cfg(self.cfg),
+            embedder_factory=_dummy_factory,
+        )
+        ok_codes_4, stable_4 = _snapshot()
+        self.assertEqual(ok_codes_1, ok_codes_4)
+        self.assertEqual(stable_1, stable_4)
 
     def test_doctor_require_phase3_flags_missing_embeddings(self) -> None:
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
