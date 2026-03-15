@@ -478,6 +478,21 @@ Current defaults in this repo are intentionally conservative:
 - roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
 - absolute/hidden path denial enabled
 
+## Ollama host selection (local vs remote)
+
+- Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > `configs/default.yaml`.
+- Values must be bare `http://` or `https://` origins with a host (optionally `:port`); a trailing slash is normalized away, while paths, query strings, and fragments are rejected.
+- Local default: `http://127.0.0.1:11434`.
+- Remote/LAN example: `python -m agent --ollama-base-url http://lan-host:11434 doctor`
+- You can also set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`; the same resolved host is then used by doctor, embed, ask/chat, and retrieval smokes.
+- Devcontainer/Codespaces sessions should point at a remote/LAN Ollama host you control. Do not expose Ollama to the public internet; keep it firewalled.
+
+## Optional devcontainer / Codespaces
+
+- A minimal `.devcontainer/devcontainer.json` is provided for Python 3.11. It mounts a persistent volume at `/workspaces/local-agent-workroot` and exports `LOCAL_AGENT_WORKROOT` there so workroot data stays outside the repo checkout.
+- `postCreateCommand` installs the project in editable mode and creates the expected workroot subdirectories.
+- Codespaces/devcontainer sessions should use `LOCAL_AGENT_OLLAMA_BASE_URL` or `--ollama-base-url` before the subcommand, for example `python -m agent --ollama-base-url http://lan-host:11434 doctor`.
+
 ## Error codes and troubleshooting
 
 Typed failure format:
