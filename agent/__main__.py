@@ -1275,14 +1275,17 @@ def run_doctor(
         require_phase3=require_phase3,
         phase3_summary_out=phase3_summary,
     )
-    ollama_base_url = resolve_ollama_base_url(cfg)
     failed = [c for c in checks if not c.ok]
 
     if json_output:
         payload: Dict[str, Any] = {
             "ok": len(failed) == 0,
             "require_phase3": bool(require_phase3),
-            "ollama_base_url": ollama_base_url,
+            "ollama_base_url": (
+                resolve_ollama_base_url(cfg)
+                if check_ollama
+                else cfg.get("ollama_base_url")
+            ),
             "checks": [
                 {
                     "ok": c.ok,
