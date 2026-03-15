@@ -296,6 +296,11 @@ def create_embedder(
     timeout_s: int,
     phase3_cfg: Optional[dict[str, Any]] = None,
 ) -> Embedder:
+    """Create the configured embedder.
+
+    base_url is used only by the Ollama provider. Other providers ignore it, so
+    callers may pass a placeholder when no Ollama endpoint is required.
+    """
     if provider == "ollama":
         return OllamaEmbedder(base_url=base_url, model_id=model_id, timeout_s=timeout_s)
     if provider != "torch":
