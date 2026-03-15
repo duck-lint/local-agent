@@ -14,12 +14,11 @@ from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
-from agent.ollama_config import OLLAMA_BASE_URL_ENV_VAR
 from agent.memory_db import connect_db as connect_memory_db
 from agent.memory_db import init_db as init_memory_db
 from agent.phase3 import build_phase3_cfg, resolve_embeddings_db_path, run_embed_phase
 from agent.retrieval import RetrievalResult, RetrievedChunk
-from agent.runtime_config import LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR
+from agent.runtime_config import DEFAULT_OLLAMA_BASE_URL, LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR
 from agent.tools import configure_tool_security
 
 
@@ -374,7 +373,7 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
             seen["timeout_s"] = str(timeout_s)
             return _dummy_factory(provider, model_id, base_url, timeout_s)
 
-        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.25:11434"}):
+        with patch.dict(os.environ, {"OLLAMA_BASE_URL": "http://192.168.1.25:11434"}):
             summary = run_embed_phase(
                 cfg=self.cfg,
                 security_root=self.workroot,
@@ -392,6 +391,33 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
                 model_id=self.cfg["phase3"]["embed"]["model_id"],
             ),
         )
+
+    def test_run_embed_phase_torch_ignores_invalid_ollama_base_url(self) -> None:
+        torch_cfg = copy.deepcopy(self.cfg)
+        torch_cfg["ollama_base_url"] = "http://example.test:11434/api"
+        torch_cfg["phase3"]["embed"]["provider"] = "torch"
+        torch_cfg["phase3"]["embed"]["model_id"] = "sentence-transformers/all-MiniLM-L6-v2"
+        phase3_cfg = build_phase3_cfg(torch_cfg)
+        seen: dict[str, str] = {}
+
+        def _capture_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
+            seen["provider"] = provider
+            seen["model_id"] = model_id
+            seen["base_url"] = base_url
+            return _dummy_factory(provider, model_id, base_url, timeout_s)
+
+        summary = run_embed_phase(
+            cfg=torch_cfg,
+            security_root=self.workroot,
+            phase2_db_path=self.db_path,
+            phase3_cfg=phase3_cfg,
+            embedder_factory=_capture_factory,
+        )
+
+        self.assertEqual(summary.provider, "torch")
+        self.assertEqual(seen["provider"], "torch")
+        self.assertEqual(seen["base_url"], DEFAULT_OLLAMA_BASE_URL)
+        self.assertNotEqual(seen["base_url"], torch_cfg["ollama_base_url"])
 
     def test_doctor_flags_orphan_embeddings_in_require_phase3_mode(self) -> None:
         phase3_cfg = build_phase3_cfg(self.cfg)

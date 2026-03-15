@@ -5,7 +5,8 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.__main__ import resolve_ollama_base_url, resolve_runtime_roots, root_log_fields
+from agent.__main__ import resolve_runtime_roots, root_log_fields
+from agent.runtime_config import resolve_ollama_base_url
 from agent.tools import TOOLS, configure_tool_security
 
 

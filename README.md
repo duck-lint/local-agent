@@ -251,7 +251,7 @@ Requirements:
 - default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
 
 Ollama host selection:
-- Effective precedence for the Ollama base URL is: existing CLI override if one is ever added for a specific command, otherwise `LOCAL_AGENT_OLLAMA_BASE_URL`, otherwise repo config `ollama_base_url`, otherwise the built-in default `http://127.0.0.1:11434`.
+- Effective precedence for the Ollama base URL is: `--ollama-base-url`, otherwise `LOCAL_AGENT_OLLAMA_BASE_URL`, otherwise `OLLAMA_BASE_URL`, otherwise repo config `ollama_base_url`, otherwise the built-in default `http://127.0.0.1:11434`.
 - `LOCAL_AGENT_WORKROOT` and `--workroot` only change the external data root. They do not change which Ollama host is used.
 - Example local default:
 
@@ -350,8 +350,8 @@ Config location (important):
 
 Optional devcontainer:
 - `.devcontainer/devcontainer.json` is intentionally minimal.
-- It adds `host.docker.internal` for container-to-host Ollama access and sets `LOCAL_AGENT_OLLAMA_BASE_URL=http://host.docker.internal:11434`.
-- Override or remove that env var if your Ollama endpoint lives elsewhere.
+- It mounts and exports only `LOCAL_AGENT_WORKROOT`; it does not automatically configure an Ollama host.
+- If your environment exposes the host machine at `host.docker.internal`, set `LOCAL_AGENT_OLLAMA_BASE_URL=http://host.docker.internal:11434` yourself.
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
