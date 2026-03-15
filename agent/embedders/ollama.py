@@ -2,7 +2,9 @@ from __future__ import annotations
 
 from array import array
 from dataclasses import dataclass
+import ipaddress
 from typing import Any
+from urllib.parse import urlsplit, urlunsplit
 
 import requests
 
@@ -21,9 +23,49 @@ class _EndpointError(RuntimeError):
         return f"{self.endpoint} failed (status={status}): {self.detail}"
 
 
+def normalize_ollama_base_url(base_url: str) -> str:
+    if not isinstance(base_url, str) or not base_url.strip():
+        raise ValueError("Ollama base URL must be a non-empty http(s) URL.")
+
+    parts = urlsplit(base_url.strip())
+    scheme = parts.scheme.lower()
+    if scheme not in {"http", "https"}:
+        raise ValueError("Ollama base URL must use http or https.")
+    if not parts.netloc or parts.hostname is None:
+        raise ValueError("Ollama base URL must include a hostname.")
+    if parts.username or parts.password:
+        raise ValueError("Ollama base URL must not include credentials.")
+    if parts.query or parts.fragment:
+        raise ValueError("Ollama base URL must not include query or fragment components.")
+    if parts.path not in {"", "/"}:
+        raise ValueError("Ollama base URL must not include a path; use only scheme://host[:port].")
+
+    host = parts.hostname
+    try:
+        parsed_ip = ipaddress.ip_address(host)
+    except ValueError:
+        parsed_ip = None
+    if parsed_ip is not None and parsed_ip.is_unspecified:
+        raise ValueError("Ollama base URL must not use an unspecified host address.")
+
+    netloc = host
+    if ":" in netloc and not netloc.startswith("["):
+        netloc = f"[{netloc}]"
+    if parts.port is not None:
+        netloc = f"{netloc}:{parts.port}"
+    return urlunsplit((scheme, netloc, "", "", ""))
+
+
+def redact_ollama_error_detail(detail: str, base_url: str) -> str:
+    text = str(detail)
+    text = text.replace(f"{base_url}/", "<ollama-base-url>/")
+    text = text.replace(base_url, "<ollama-base-url>")
+    return text
+
+
 class OllamaEmbedder(Embedder):
     def __init__(self, *, base_url: str, model_id: str, timeout_s: int) -> None:
-        self.base_url = base_url.rstrip("/")
+        self.base_url = normalize_ollama_base_url(base_url)
         self.model_id = model_id
         self.timeout_s = int(timeout_s)
         self._embed_dim = 0
@@ -76,12 +118,20 @@ class OllamaEmbedder(Embedder):
         try:
             response = requests.post(url, json=payload, timeout=self.timeout_s)
         except requests.RequestException as exc:
-            raise _EndpointError(endpoint=endpoint, status_code=None, detail=str(exc)) from exc
+            raise _EndpointError(
+                endpoint=endpoint,
+                status_code=None,
+                detail=redact_ollama_error_detail(str(exc), self.base_url),
+            ) from exc
 
         try:
             response.raise_for_status()
         except requests.HTTPError as exc:
-            raise _EndpointError(endpoint=endpoint, status_code=response.status_code, detail=str(exc)) from exc
+            raise _EndpointError(
+                endpoint=endpoint,
+                status_code=response.status_code,
+                detail=redact_ollama_error_detail(str(exc), self.base_url),
+            ) from exc
 
         try:
             return response.json()

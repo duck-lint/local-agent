@@ -14,7 +14,7 @@ from agent.embedding_fingerprint import (
     preprocess_chunk_text,
 )
 from agent.embedder import Embedder
-from agent.embedders.ollama import OllamaEmbedder
+from agent.embedders.ollama import OllamaEmbedder, normalize_ollama_base_url
 from agent.embedders.torch_embedder import TorchEmbedder
 from agent.ollama_config import resolve_ollama_base_url
 from agent.embeddings_db import (

@@ -93,6 +93,11 @@ Keep Ollama and workroot external to the repo checkout. In a remote container, t
 
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
 
+Remote/devcontainer safety:
+- Point the agent only at Ollama endpoints you control (localhost, private LAN, or private dev environment).
+- Do not publish or auto-forward port `11434` to the public internet from Codespaces/devcontainers.
+- For offline validation inside a remote dev environment, use `python -m agent doctor --no-ollama`.
+
 Torch-first phase3 flow:
 ```bash
 python -m agent index --rebuild --json

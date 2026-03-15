@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.__main__ import resolve_runtime_roots, root_log_fields
+from agent.__main__ import resolve_ollama_base_url, resolve_runtime_roots, root_log_fields
 from agent.tools import TOOLS, configure_tool_security
 
 
@@ -117,6 +117,27 @@ class RootResolutionTests(unittest.TestCase):
             package_root=self.repo_root,
         )
         self.assertEqual(roots["workroot"], (self.repo_root / "cli-root").resolve())
+
+    def test_ollama_base_url_precedence_cli_over_env_and_config(self) -> None:
+        resolved = resolve_ollama_base_url(
+            {"ollama_base_url": "http://config-host:11434"},
+            cli_base_url="https://cli-host:22434/",
+            env_base_url="http://env-host:11434",
+        )
+        self.assertEqual(resolved, "https://cli-host:22434")
+
+    def test_ollama_base_url_precedence_env_over_config(self) -> None:
+        resolved = resolve_ollama_base_url(
+            {"ollama_base_url": "http://config-host:11434"},
+            env_base_url="http://env-host:11434/",
+        )
+        self.assertEqual(resolved, "http://env-host:11434")
+
+    def test_ollama_base_url_rejects_paths_and_credentials(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not include credentials"):
+            resolve_ollama_base_url({}, cli_base_url="http://user:pass@example.test:11434")
+        with self.assertRaisesRegex(ValueError, "must not include a path"):
+            resolve_ollama_base_url({}, cli_base_url="http://example.test:11434/api")
 
 
 if __name__ == "__main__":
