@@ -53,6 +53,11 @@ from agent.phase3 import (
     resolve_memory_db_path,
     run_embed_phase,
 )
+from agent.ollama_config import (
+    OLLAMA_BASE_URL_ENV,
+    OLLAMA_BASE_URL_FALLBACK_ENV,
+    resolve_ollama_base_url,
+)
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.retrieval import RetrievalResult, retrieve
 from agent.runtime_config import (
