@@ -74,7 +74,7 @@ local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes 
 
 Codespaces / devcontainer quickstart:
 ```bash
-python -m pytest -q
+python -m unittest discover -s tests -v
 python -m agent doctor --no-ollama
 export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
 export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
