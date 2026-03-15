@@ -167,13 +167,21 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
 
     def test_doctor_flags_outdated_then_embed_fixes(self) -> None:
         phase3_cfg = build_phase3_cfg(self.cfg)
-        first = run_embed_phase(
-            cfg=self.cfg,
-            security_root=self.workroot,
-            phase2_db_path=self.db_path,
-            phase3_cfg=phase3_cfg,
-            embedder_factory=_dummy_factory,
-        )
+        with patch.dict(
+            os.environ,
+            {
+                LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "",
+                "OLLAMA_BASE_URL": "",
+            },
+            clear=False,
+        ):
+            first = run_embed_phase(
+                cfg=self.cfg,
+                security_root=self.workroot,
+                phase2_db_path=self.db_path,
+                phase3_cfg=phase3_cfg,
+                embedder_factory=_dummy_factory,
+            )
         self.assertGreater(first.embedded_written, 0)
 
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
@@ -197,13 +205,21 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         self.assertIn("DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3", failed_codes)
         self.assertGreater(int(summary["outdated_embeddings"]), 0)
 
-        second = run_embed_phase(
-            cfg=self.cfg,
-            security_root=self.workroot,
-            phase2_db_path=self.db_path,
-            phase3_cfg=phase3_cfg,
-            embedder_factory=_dummy_factory,
-        )
+        with patch.dict(
+            os.environ,
+            {
+                LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "",
+                "OLLAMA_BASE_URL": "",
+            },
+            clear=False,
+        ):
+            second = run_embed_phase(
+                cfg=self.cfg,
+                security_root=self.workroot,
+                phase2_db_path=self.db_path,
+                phase3_cfg=phase3_cfg,
+                embedder_factory=_dummy_factory,
+            )
         self.assertGreater(second.embedded_written, 0)
 
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
