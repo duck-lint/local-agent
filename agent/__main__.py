@@ -3332,7 +3332,7 @@ def main() -> int:
     )
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
-        cfg = apply_env_config_overrides(deep_merge_config(DEFAULT_CONFIG, loaded_cfg))
+        cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.__main__ import (
+    apply_env_config_overrides,
     deep_merge_config,
     discover_config_path,
     load_config_with_path,
@@ -159,6 +160,21 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["phase2"]["chunking"]["max_chars"], 2048)
         self.assertEqual(merged["phase2"]["chunking"]["overlap"], 120)
         self.assertEqual(merged["phase2"]["sources"], [{"name": "corpus"}])
+
+    def test_apply_env_config_overrides_uses_explicit_environ(self) -> None:
+        cfg = {
+            "ollama_base_url": "http://127.0.0.1:11434",
+            "security": {"deny_hidden_paths": True},
+        }
+
+        updated = apply_env_config_overrides(
+            cfg,
+            environ={"LOCAL_AGENT_OLLAMA_BASE_URL": "  http://ollama.internal:11434  "},
+        )
+
+        self.assertEqual(updated["ollama_base_url"], "http://ollama.internal:11434")
+        self.assertEqual(updated["security"], cfg["security"])
+        self.assertEqual(cfg["ollama_base_url"], "http://127.0.0.1:11434")
 
 
 if __name__ == "__main__":
