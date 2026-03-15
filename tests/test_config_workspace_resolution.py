@@ -186,7 +186,7 @@ class ConfigMergeTests(unittest.TestCase):
 class OllamaBaseUrlResolutionTests(unittest.TestCase):
     def test_env_override_wins_over_config(self) -> None:
         cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
-        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
+        with patch.dict(os.environ, {LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
             self.assertEqual(resolve_ollama_base_url(cfg), "http://192.168.1.20:11434")
 
     def test_config_value_is_used_when_env_absent(self) -> None:
@@ -195,7 +195,7 @@ class OllamaBaseUrlResolutionTests(unittest.TestCase):
             self.assertEqual(resolve_ollama_base_url(cfg), "http://10.0.0.7:11434")
 
 
-class OllamaBaseUrlResolutionTests(unittest.TestCase):
+class OllamaBaseUrlRuntimeResolutionTests(unittest.TestCase):
     def test_prefers_local_agent_env_over_config_and_normalizes_trailing_slash(self) -> None:
         cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
         resolved = resolve_ollama_base_url(
@@ -204,10 +204,10 @@ class OllamaBaseUrlResolutionTests(unittest.TestCase):
         )
         self.assertEqual(resolved, "http://host.docker.internal:11434")
 
-    def test_accepts_compat_env_without_scheme(self) -> None:
+    def test_accepts_compat_env_with_scheme(self) -> None:
         resolved = resolve_ollama_base_url(
             {},
-            env={COMPAT_OLLAMA_BASE_URL_ENV_VAR: "devbox.internal:11434"},
+            env={COMPAT_OLLAMA_BASE_URL_ENV_VAR: "http://devbox.internal:11434"},
         )
         self.assertEqual(resolved, "http://devbox.internal:11434")
 

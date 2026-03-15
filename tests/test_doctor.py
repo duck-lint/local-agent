@@ -8,9 +8,9 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.__main__ import collect_doctor_checks, deep_merge_config
-from agent.ollama_config import OLLAMA_BASE_URL_ENV_VAR
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
+from agent.runtime_config import LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR
 from agent.tools import configure_tool_security
 
 
@@ -114,7 +114,7 @@ class DoctorChecksTests(unittest.TestCase):
             seen["base_url"] = base_url
             seen["timeout_s"] = str(timeout_s)
 
-        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
+        with patch.dict(os.environ, {LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
             with patch("agent.__main__.ensure_ollama_up", side_effect=_fake_ensure):
                 checks = collect_doctor_checks(
                     deep_merge_config({}, self.cfg),
@@ -177,6 +177,19 @@ class DoctorChecksTests(unittest.TestCase):
         self.assertEqual(len(ollama_failures), 1)
         self.assertNotIn(bad_cfg["ollama_base_url"], ollama_failures[0].message)
         self.assertIn("must not include query", ollama_failures[0].message)
+
+    def test_collect_doctor_checks_allows_invalid_ollama_url_when_check_is_disabled(self) -> None:
+        bad_cfg = deep_merge_config({}, self.cfg)
+        bad_cfg["ollama_base_url"] = "http://example.test:11434/api?token=secret"
+
+        checks = collect_doctor_checks(
+            bad_cfg,
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=False,
+        )
+
+        self.assertFalse(any(check.error_code == "DOCTOR_OLLAMA_UNREACHABLE" for check in checks))
 
     def test_collect_doctor_checks_detects_missing_chunk_key(self) -> None:
         with connect_db(self.db_path) as conn:

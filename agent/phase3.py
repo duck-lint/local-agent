@@ -16,7 +16,6 @@ from agent.embedding_fingerprint import (
 from agent.embedder import Embedder
 from agent.embedders.ollama import OllamaEmbedder, normalize_ollama_base_url
 from agent.embedders.torch_embedder import TorchEmbedder
-from agent.ollama_config import resolve_ollama_base_url
 from agent.embeddings_db import (
     count_orphan_embeddings,
     connect_db as connect_embeddings_db,
@@ -30,7 +29,7 @@ from agent.embeddings_db import (
 )
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
-from agent.runtime_config import resolve_ollama_base_url
+from agent.runtime_config import DEFAULT_OLLAMA_BASE_URL, resolve_ollama_base_url
 
 
 DEFAULT_PHASE3: dict[str, Any] = {
@@ -471,7 +470,7 @@ def run_embed_phase(
         )
 
     timeout_s = _as_int(cfg.get("timeout_s"), 300)
-    base_url = resolve_ollama_base_url(cfg)
+    base_url = resolve_ollama_base_url(cfg) if provider == "ollama" else DEFAULT_OLLAMA_BASE_URL
     factory = embedder_factory
     if factory is None:
         def _default_factory(p: str, m: str, b: str, t: int):
