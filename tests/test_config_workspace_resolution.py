@@ -12,6 +12,12 @@ from agent.__main__ import (
     select_reread_path,
     workspace_root_from_config_path,
 )
+from agent.runtime_config import (
+    COMPAT_OLLAMA_BASE_URL_ENV_VAR,
+    DEFAULT_OLLAMA_BASE_URL,
+    LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR,
+    resolve_ollama_base_url,
+)
 from agent.tools import TOOLS, configure_tool_security
 
 
@@ -149,6 +155,30 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["phase2"]["chunking"]["max_chars"], 2048)
         self.assertEqual(merged["phase2"]["chunking"]["overlap"], 120)
         self.assertEqual(merged["phase2"]["sources"], [{"name": "corpus"}])
+
+
+class OllamaBaseUrlResolutionTests(unittest.TestCase):
+    def test_prefers_local_agent_env_over_config_and_normalizes_trailing_slash(self) -> None:
+        cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
+        resolved = resolve_ollama_base_url(
+            cfg,
+            env={LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "http://host.docker.internal:11434/"},
+        )
+        self.assertEqual(resolved, "http://host.docker.internal:11434")
+
+    def test_accepts_compat_env_without_scheme(self) -> None:
+        resolved = resolve_ollama_base_url(
+            {},
+            env={COMPAT_OLLAMA_BASE_URL_ENV_VAR: "devbox.internal:11434"},
+        )
+        self.assertEqual(resolved, "http://devbox.internal:11434")
+
+    def test_falls_back_to_default_when_config_and_env_are_blank(self) -> None:
+        resolved = resolve_ollama_base_url(
+            {"ollama_base_url": "   "},
+            env={LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "   "},
+        )
+        self.assertEqual(resolved, DEFAULT_OLLAMA_BASE_URL)
 
 
 if __name__ == "__main__":

@@ -1,7 +1,8 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import copy
 import hashlib
+import os
 import sqlite3
 import tempfile
 import unittest
@@ -17,6 +18,7 @@ from agent.memory_db import connect_db as connect_memory_db
 from agent.memory_db import init_db as init_memory_db
 from agent.phase3 import build_phase3_cfg, resolve_embeddings_db_path, run_embed_phase
 from agent.retrieval import RetrievalResult, RetrievedChunk
+from agent.runtime_config import LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR
 from agent.tools import configure_tool_security
 
 
@@ -207,6 +209,34 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
         self.assertEqual(failed_codes, [])
         self.assertEqual(int(summary["outdated_embeddings"]), 0)
+
+    def test_embed_uses_env_overridden_ollama_base_url(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        seen: dict[str, str] = {}
+
+        def _capturing_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
+            seen["provider"] = provider
+            seen["model_id"] = model_id
+            seen["base_url"] = base_url
+            return _dummy_factory(provider, model_id, base_url, timeout_s)
+
+        with patch.dict(
+            os.environ,
+            {LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "http://host.docker.internal:11434/"},
+            clear=False,
+        ):
+            run_embed_phase(
+                cfg=self.cfg,
+                security_root=self.workroot,
+                phase2_db_path=self.db_path,
+                phase3_cfg=phase3_cfg,
+                embedder_factory=_capturing_factory,
+                rebuild=True,
+            )
+
+        self.assertEqual(seen["provider"], "ollama")
+        self.assertEqual(seen["model_id"], "nomic-embed-text-v1.5")
+        self.assertEqual(seen["base_url"], "http://host.docker.internal:11434")
 
     def test_doctor_is_stable_after_index_and_embed_runs(self) -> None:
         rebuild_summary = index_sources(

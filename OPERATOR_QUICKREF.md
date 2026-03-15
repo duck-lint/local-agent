@@ -8,6 +8,7 @@ This is the short runbook. For full architecture and policy detail, see `README.
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
+If you are using a remote host or the devcontainer, set `LOCAL_AGENT_OLLAMA_BASE_URL` (or `OLLAMA_BASE_URL`) first, for example `http://host.docker.internal:11434`.
 2. Python env exists and deps installed (`requests`, `pyyaml`).
 ```bash
 python -m venv .venv
@@ -28,6 +29,7 @@ pip install -e ".[torch-embed]"
 - Launch directory does not change config selection.
 - No config file is required in `local-agent-workroot`.
 - Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
+- Effective Ollama endpoint precedence is `LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default.
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
@@ -68,6 +70,10 @@ local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes 
 ```
 
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
+
+Optional devcontainer support:
+- `.devcontainer/devcontainer.json` keeps setup minimal and points the container at `http://host.docker.internal:11434` by default.
+- Override `LOCAL_AGENT_OLLAMA_BASE_URL` if your Ollama host differs.
 
 Torch-first phase3 flow:
 ```bash
