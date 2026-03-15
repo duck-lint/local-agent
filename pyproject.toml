@@ -12,6 +12,7 @@ dependencies = ["requests", "PyYAML"]
 
 [project.optional-dependencies]
 torch-embed = ["torch", "transformers", "sentence-transformers"]
+dev = ["pytest>=7"]
 
 [project.scripts]
 local-agent = "agent.__main__:main"

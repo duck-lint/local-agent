@@ -1,40 +1,47 @@
 from __future__ import annotations
 
 import os
-from typing import Any
+from typing import Mapping, Optional
+from urllib.parse import urlparse
+
+OLLAMA_BASE_URL_ENV = "LOCAL_AGENT_OLLAMA_BASE_URL"
+OLLAMA_BASE_URL_FALLBACK_ENV = "OLLAMA_BASE_URL"
 
 
-DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
-OLLAMA_BASE_URL_ENV_VAR = "LOCAL_AGENT_OLLAMA_BASE_URL"
+def _normalize_ollama_base_url(raw: str) -> str:
+    text = str(raw).strip()
+    if not text:
+        raise ValueError("Ollama base URL is empty")
+    parsed = urlparse(text)
+    if parsed.scheme not in {"http", "https"}:
+        raise ValueError("Ollama base URL must include http or https scheme")
+    if not parsed.netloc:
+        raise ValueError("Ollama base URL must include host or host:port")
+    return text.rstrip("/")
 
 
-def _string_value(value: Any) -> str | None:
-    if value is None:
-        return None
-    text = str(value).strip()
-    return text or None
+def resolve_ollama_base_url(
+    *,
+    cli_override: Optional[str],
+    env: Optional[Mapping[str, str]],
+    config_value: Optional[str],
+    default: Optional[str] = None,
+) -> str:
+    environment = env or os.environ
+    candidates = [
+        cli_override,
+        environment.get(OLLAMA_BASE_URL_ENV),
+        environment.get(OLLAMA_BASE_URL_FALLBACK_ENV),
+        config_value,
+        default,
+    ]
 
+    for candidate in candidates:
+        if candidate is None:
+            continue
+        return _normalize_ollama_base_url(candidate)
 
-def _normalize_base_url(base_url: str) -> str:
-    """
-    Normalize the Ollama base URL so callers can safely append paths like "/api/...".
-
-    Currently this just strips trailing slashes to avoid "//api/..." when concatenating,
-    while preserving the scheme, host, and port as provided.
-    """
-    return base_url.rstrip("/")
-
-
-def resolve_ollama_base_url(cfg: dict[str, Any] | None, *, env_value: str | None = None) -> str:
-    env_base_url = _string_value(
-        env_value if env_value is not None else os.environ.get(OLLAMA_BASE_URL_ENV_VAR)
+    raise ValueError(
+        "Ollama base URL not configured. Set --ollama-base-url, "
+        f"{OLLAMA_BASE_URL_ENV}, {OLLAMA_BASE_URL_FALLBACK_ENV}, or configure ollama_base_url."
     )
-    if env_base_url is not None:
-        return _normalize_base_url(env_base_url)
-
-    if isinstance(cfg, dict):
-        configured_base_url = _string_value(cfg.get("ollama_base_url"))
-        if configured_base_url is not None:
-            return _normalize_base_url(configured_base_url)
-
-    return DEFAULT_OLLAMA_BASE_URL

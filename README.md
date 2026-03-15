@@ -552,6 +552,20 @@ Current defaults in this repo are intentionally conservative:
 - roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
 - absolute/hidden path denial enabled
 
+## Ollama host selection (local vs remote)
+
+- Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > `configs/default.yaml`.
+- Values must include `http://` or `https://` and a host (optionally `:port`); trailing slash is trimmed and invalid values fail fast.
+- Local default: `http://127.0.0.1:11434`.
+- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by doctor, embed, ask/chat, and retrieval smokes.
+- Devcontainer/Codespaces: the container does not run Ollama; point `LOCAL_AGENT_OLLAMA_BASE_URL` at a host you control on the LAN/VPN. Do not expose Ollama to the public internet; keep it firewalled.
+
+## Optional devcontainer / Codespaces
+
+- A minimal `.devcontainer/devcontainer.json` is provided for Python 3.11. It mounts a persistent volume at `/workspaces/local-agent-workroot` and exports `LOCAL_AGENT_WORKROOT` there (workroot stays outside the repo).
+- `postCreateCommand` installs the project in editable mode with dev extras (`pip install -e ".[dev]"`) and creates the expected workroot subdirectories.
+- Codespaces/devcontainer sessions should point at a remote/LAN Ollama host via `LOCAL_AGENT_OLLAMA_BASE_URL` or `--ollama-base-url`; do not assume Ollama is running inside the container.
+
 ## Error codes and troubleshooting
 
 Typed failure format:
