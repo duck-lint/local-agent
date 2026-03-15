@@ -1134,11 +1134,11 @@ def collect_doctor_checks(
             smoke_fetch_k = max(10, configured_fetch if configured_fetch > 0 else auto_fetch)
             lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
             fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
-            smoke_ollama_base_url = resolve_ollama_base_url(cfg)
+            smoke_base_url = resolve_ollama_base_url(cfg) if provider == "ollama" else None
             smoke_embedder = create_embedder(
                 provider=provider,
                 model_id=embed_model_id,
-                base_url=smoke_ollama_base_url,
+                base_url=smoke_base_url,
                 timeout_s=cfg["timeout_s"],
                 phase3_cfg=phase3_cfg,
             )
