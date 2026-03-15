@@ -8,6 +8,11 @@ This is the short runbook. For full architecture and policy detail, see `README.
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
+   Or for a LAN-hosted Ollama on another machine:
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434
+curl "$LOCAL_AGENT_OLLAMA_BASE_URL/api/tags"
+```
 2. Python env exists and deps installed (`requests`, `pyyaml`).
 ```bash
 python -m venv .venv
@@ -32,7 +37,8 @@ python -m pip install -e ".[dev]"
 - Launch directory does not change config selection.
 - No config file is required in `local-agent-workroot`.
 - Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
-- Optional Ollama host override: `LOCAL_AGENT_OLLAMA_BASE_URL` for devcontainers, Codespaces, or any environment where Ollama is reachable on a non-default host.
+- Optional Ollama host override: `LOCAL_AGENT_OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
+- Workroot selection stays independent from the Ollama host selection.
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
@@ -63,6 +69,8 @@ python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
 python -m agent doctor --require-phase3 --json
+LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
+LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent ask "Summarize the indexed notes about coherence."
 local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
 local-agent embed --json
@@ -70,6 +78,7 @@ local-agent embed --no-prune --json
 local-agent memory list --json
 local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
+LOCAL_AGENT_WORKROOT=../local-agent-workroot LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
 ```
 
 Codespaces / devcontainer quickstart:

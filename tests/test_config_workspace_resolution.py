@@ -14,6 +14,7 @@ from agent.__main__ import (
     select_reread_path,
     workspace_root_from_config_path,
 )
+from agent.ollama_config import OLLAMA_BASE_URL_ENV_VAR, resolve_ollama_base_url
 from agent.tools import TOOLS, configure_tool_security
 
 
@@ -175,6 +176,18 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(updated["ollama_base_url"], "http://ollama.internal:11434")
         self.assertEqual(updated["security"], cfg["security"])
         self.assertEqual(cfg["ollama_base_url"], "http://127.0.0.1:11434")
+
+
+class OllamaBaseUrlResolutionTests(unittest.TestCase):
+    def test_env_override_wins_over_config(self) -> None:
+        cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
+        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
+            self.assertEqual(resolve_ollama_base_url(cfg), "http://192.168.1.20:11434")
+
+    def test_config_value_is_used_when_env_absent(self) -> None:
+        cfg = {"ollama_base_url": "http://10.0.0.7:11434"}
+        with patch.dict(os.environ, {}, clear=True):
+            self.assertEqual(resolve_ollama_base_url(cfg), "http://10.0.0.7:11434")
 
 
 if __name__ == "__main__":
