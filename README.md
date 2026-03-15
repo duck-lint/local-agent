@@ -282,6 +282,48 @@ pip install -e .
 
 `phase3.embed.provider: torch` will fail unless Torch + embedding dependencies are installed.
 
+### Optional devcontainer / Codespaces development
+
+This repo now includes a minimal `.devcontainer/devcontainer.json` for Python 3.11 development. It is intentionally small: it installs the package in editable mode with the optional `dev` extra so you can run the test suite and general CLI commands, but it does not change the runtime architecture or assume Ollama is running inside the container.
+
+Open the repository in a devcontainer or GitHub Codespace, then use:
+
+```bash
+python -m pytest -q
+python -m agent doctor --no-ollama
+```
+
+The devcontainer installs:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+If you also want the optional Torch embedding stack in the container, install it explicitly:
+
+```bash
+python -m pip install -e ".[dev,torch-embed]"
+```
+
+Ollama remains external. From a Codespace or any other remote Linux dev environment, point the CLI at a reachable Ollama host with:
+
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
+```
+
+Use this for a remote Linux box, a forwarded tunnel, or another host that exposes the Ollama API. Do not assume `http://127.0.0.1:11434` inside the devcontainer unless you have explicitly arranged that network path yourself.
+
+Workroot also remains external to the repo. Provide it explicitly instead of storing live data under the checkout:
+
+```bash
+mkdir -p /workspaces/local-agent-workroot/allowed/corpus
+mkdir -p /workspaces/local-agent-workroot/allowed/scratch
+mkdir -p /workspaces/local-agent-workroot/runs
+export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
+```
+
+Depending on your environment, that workroot may be a mounted volume, a copied dataset, or a separately provisioned directory. The repo still expects config in `configs/default.yaml` and data in the external workroot.
+
 Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.

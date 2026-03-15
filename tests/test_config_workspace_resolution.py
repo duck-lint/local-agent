@@ -4,6 +4,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.__main__ import (
     deep_merge_config,
@@ -42,6 +43,7 @@ class ConfigWorkspaceResolutionTests(unittest.TestCase):
 model: gpt-oss:120b
 model_fast: repo-pinned-model
 model_big: gpt-oss:120b
+ollama_base_url: http://127.0.0.1:11434
 security:
   allowed_roots:
     - "../workroot/allowed/corpus/"
@@ -96,6 +98,14 @@ security:
         cfg, cfg_path = load_config_with_path(start_dir=Path.cwd(), repo_root=empty_repo)
         self.assertEqual(cfg, {})
         self.assertIsNone(cfg_path)
+
+    def test_env_ollama_base_url_overrides_repo_config(self) -> None:
+        with patch.dict(os.environ, {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://ollama.example:11434"}):
+            cfg, cfg_path = load_config_with_path(start_dir=Path.cwd(), repo_root=self.repo_root)
+
+        expected_cfg = (self.repo_root / "configs" / "default.yaml").resolve()
+        self.assertEqual(cfg_path.resolve(), expected_cfg)
+        self.assertEqual(cfg.get("ollama_base_url"), "http://ollama.example:11434")
 
 
 class RereadPathSelectionTests(unittest.TestCase):

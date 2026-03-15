@@ -109,6 +109,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 READ_TEXT_FILE_HARD_CAP = 200_000
 WORKROOT_ENV_VAR = "LOCAL_AGENT_WORKROOT"
+OLLAMA_BASE_URL_ENV_VAR = "LOCAL_AGENT_OLLAMA_BASE_URL"
 ASK_EVIDENCE_TOP_N = 8
 
 
@@ -135,11 +136,22 @@ def load_config_with_path(
         data = yaml.safe_load(f) or {}
     if not isinstance(data, dict):
         raise ValueError(f"{cfg_path}: configs/default.yaml must contain a mapping/object")
-    return data, cfg_path
+    return apply_env_config_overrides(data), cfg_path
 
 
 def load_config() -> Dict[str, Any]:
     return load_config_with_path()[0]
+
+
+def apply_env_config_overrides(
+    cfg: Dict[str, Any],
+    environ: Optional[Dict[str, str]] = None,
+) -> Dict[str, Any]:
+    env = os.environ if environ is None else environ
+    ollama_base_url = _string_config_value(env.get(OLLAMA_BASE_URL_ENV_VAR))
+    if ollama_base_url is None:
+        return cfg
+    return deep_merge_config(cfg, {"ollama_base_url": ollama_base_url})
 
 
 def deep_merge_config(base: Dict[str, Any], override: Dict[str, Any]) -> Dict[str, Any]:
@@ -3320,7 +3332,7 @@ def main() -> int:
     )
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
-        cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
+        cfg = apply_env_config_overrides(deep_merge_config(DEFAULT_CONFIG, loaded_cfg))
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,
