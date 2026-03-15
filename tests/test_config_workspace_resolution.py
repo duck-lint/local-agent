@@ -161,8 +161,7 @@ class OllamaBaseUrlResolutionTests(unittest.TestCase):
 
     def test_config_value_is_used_when_env_absent(self) -> None:
         cfg = {"ollama_base_url": "http://10.0.0.7:11434"}
-        with patch.dict(os.environ, {}, clear=False):
-            os.environ.pop(OLLAMA_BASE_URL_ENV_VAR, None)
+        with patch.dict(os.environ, {}, clear=True):
             self.assertEqual(resolve_ollama_base_url(cfg), "http://10.0.0.7:11434")
 
 

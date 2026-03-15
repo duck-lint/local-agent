@@ -2420,7 +2420,6 @@ def run_index(
         cfg=cfg,
         cli_workroot=None,
     )
-    ollama_base_url = resolve_ollama_base_url(cfg)
     security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
     phase2_cfg = _phase2_cfg_with_index_overrides(
         _build_phase2_cfg(cfg),
@@ -2898,6 +2897,7 @@ def run_ask_grounded(
         cfg=cfg,
         cli_workroot=None,
     )
+    ollama_base_url = resolve_ollama_base_url(cfg)
     security_root = runtime_roots.get("security_root") or Path.cwd().resolve()
     ensure_phase3_dirs(security_root)
     run_dir = make_run_dir(security_root=security_root)
@@ -3334,7 +3334,6 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
-        cfg["ollama_base_url"] = resolve_ollama_base_url(cfg)
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,
