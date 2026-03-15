@@ -203,11 +203,23 @@ def resolve_ollama_base_url(
     env_base_url: Optional[str] = None,
 ) -> str:
     cli_value = _string_config_value(cli_base_url)
-    env_value = _string_config_value(
-        env_base_url if env_base_url is not None else os.environ.get(OLLAMA_BASE_URL_ENV_VAR)
-    )
     cfg_value = _string_config_value(cfg.get("ollama_base_url"))
-    selected = cli_value or env_value or cfg_value or str(DEFAULT_CONFIG["ollama_base_url"])
+
+    # Preserve documented precedence (CLI > env > config) while avoiding
+    # late environment changes overriding an already-resolved value stored
+    # in cfg. If cfg already contains a value and no explicit env override
+    # was provided, treat cfg as the source of truth and skip implicit
+    # os.environ lookups.
+    if cli_value is not None:
+        selected = cli_value
+    elif cfg_value is not None and env_base_url is None:
+        selected = cfg_value
+    else:
+        env_value = _string_config_value(
+            env_base_url if env_base_url is not None else os.environ.get(OLLAMA_BASE_URL_ENV_VAR)
+        )
+        selected = env_value or cfg_value or str(DEFAULT_CONFIG["ollama_base_url"])
+
     return normalize_ollama_base_url(selected)
 
 
