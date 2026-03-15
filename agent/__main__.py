@@ -59,6 +59,7 @@ from agent.phase3 import (
 )
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.retrieval import RetrievalResult, retrieve
+from agent.runtime_config import DEFAULT_OLLAMA_BASE_URL, resolve_ollama_base_url
 from agent.tools import TOOLS, ToolError, configure_tool_security, get_read_text_file_policy
 
 
@@ -968,7 +969,7 @@ def collect_doctor_checks(
                         runtime_embedder = create_embedder(
                             provider=provider,
                             model_id=embed_model_id,
-                            base_url=ollama_base_url,
+                            base_url=resolve_ollama_base_url(cfg),
                             timeout_s=cfg["timeout_s"],
                             phase3_cfg=phase3_cfg,
                         )
@@ -1154,7 +1155,7 @@ def collect_doctor_checks(
             smoke_embedder = create_embedder(
                 provider=provider,
                 model_id=embed_model_id,
-                base_url=ollama_base_url,
+                base_url=resolve_ollama_base_url(cfg),
                 timeout_s=cfg["timeout_s"],
                 phase3_cfg=phase3_cfg,
             )
@@ -2055,6 +2056,7 @@ def run_chat(
     record.update(root_log_fields(runtime_roots))
 
     try:
+        ollama_base_url = resolve_ollama_base_url(cfg)
         ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
         resp = ollama_chat(
             base_url=ollama_base_url,
@@ -2132,6 +2134,7 @@ def run_ask_one_tool(
     record.update(root_log_fields(runtime_roots))
 
     try:
+        ollama_base_url = resolve_ollama_base_url(cfg)
         ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
 
         messages: List[Dict[str, str]] = [
@@ -2994,6 +2997,7 @@ def run_ask_grounded(
     record.update(root_log_fields(runtime_roots))
 
     try:
+        ollama_base_url = resolve_ollama_base_url(cfg)
         ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
         phase2_cfg = _build_phase2_cfg(cfg)
         phase3_cfg = _build_phase3_cfg(cfg)
@@ -3406,10 +3410,7 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
-        cfg["ollama_base_url"] = resolve_ollama_base_url(
-            cfg,
-            cli_base_url=getattr(args, "ollama_base_url", None),
-        )
+        cfg["ollama_base_url"] = resolve_ollama_base_url(cfg)
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,

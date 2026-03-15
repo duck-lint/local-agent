@@ -245,8 +245,8 @@ Redaction rule:
 ## Setup and quickstart
 
 Requirements:
-- Python 3.10+ (3.11 recommended)
-- Ollama running locally (default `http://127.0.0.1:11434`) or at an explicitly trusted remote endpoint via `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL`
+- Python 3.11+
+- Ollama reachable from the runtime environment (default `http://127.0.0.1:11434`)
 - repo config available at `configs/default.yaml` (always used; see Config location below)
 - default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
 
@@ -345,13 +345,19 @@ Depending on your environment, that workroot may be a mounted volume, a copied d
 Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.
-- Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, `ollama_base_url` comes from `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL` / config `ollama_base_url`, and `security_root` is the path anchor used for tool security and run logs.
+- Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
+- Effective Ollama endpoint precedence is `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`, then config `ollama_base_url`, then the built-in default `http://127.0.0.1:11434`.
+
+Optional devcontainer:
+- `.devcontainer/devcontainer.json` is intentionally minimal.
+- It adds `host.docker.internal` for container-to-host Ollama access and sets `LOCAL_AGENT_OLLAMA_BASE_URL=http://host.docker.internal:11434`.
+- Override or remove that env var if your Ollama endpoint lives elsewhere.
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
 - Point `security.allowed_roots` at your sibling workroot data folders (already set in this repo):
   - `../local-agent-workroot/allowed/corpus/`
-  - `../local-agent-workroot/allowed/runs/`
+  - `../local-agent-workroot/runs/`
   - `../local-agent-workroot/allowed/scratch/`
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
 
@@ -511,7 +517,7 @@ Top-level:
 - `full_evidence_triggers`
 - `temperature`
 - `ollama_base_url`
-- `LOCAL_AGENT_OLLAMA_BASE_URL` (runtime env override for `ollama_base_url`)
+- environment overrides: `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`

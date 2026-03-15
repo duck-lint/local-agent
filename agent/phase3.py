@@ -30,6 +30,7 @@ from agent.embeddings_db import (
 )
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
+from agent.runtime_config import resolve_ollama_base_url
 
 
 DEFAULT_PHASE3: dict[str, Any] = {

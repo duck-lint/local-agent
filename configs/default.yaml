@@ -11,7 +11,8 @@ big_triggers:
   - in depth
   - detailed
   - analysis
-# Override at runtime with LOCAL_AGENT_OLLAMA_BASE_URL when you need a LAN-hosted Ollama.
+# Effective precedence: LOCAL_AGENT_OLLAMA_BASE_URL / OLLAMA_BASE_URL env,
+# then this config value, then the built-in default below.
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
 max_tokens_big_second: 4500
