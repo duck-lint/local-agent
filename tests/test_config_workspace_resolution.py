@@ -183,7 +183,7 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(cfg["ollama_base_url"], "http://127.0.0.1:11434")
 
 
-class OllamaBaseUrlResolutionTests(unittest.TestCase):
+class OllamaBaseUrlConfigResolutionTests(unittest.TestCase):
     def test_env_override_wins_over_config(self) -> None:
         cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
         with patch.dict(os.environ, {LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):

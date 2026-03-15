@@ -417,6 +417,7 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         self.assertEqual(summary.provider, "torch")
         self.assertEqual(seen["provider"], "torch")
         self.assertEqual(seen["base_url"], DEFAULT_OLLAMA_BASE_URL)
+        self.assertNotEqual(seen["base_url"], torch_cfg["ollama_base_url"])
 
     def test_doctor_flags_orphan_embeddings_in_require_phase3_mode(self) -> None:
         phase3_cfg = build_phase3_cfg(self.cfg)

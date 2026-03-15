@@ -50,7 +50,10 @@ def resolve_ollama_base_url(
     cli_override_text = _string(cli_override)
     cli_base_url_text = _string(cli_base_url)
     if cli_override_text and cli_base_url_text and cli_override_text != cli_base_url_text:
-        raise ValueError("Conflicting Ollama base URL overrides were provided.")
+        raise ValueError(
+            "Conflicting Ollama base URL overrides: "
+            f"cli_override={cli_override_text!r} vs cli_base_url={cli_base_url_text!r}"
+        )
     cli_candidate = cli_override_text or cli_base_url_text
     config_candidate = explicit_config or cfg_value
     # config_value is the canonical explicit keyword used by newer callers;
@@ -67,6 +70,7 @@ def resolve_ollama_base_url(
         text = _string(candidate)
         if text:
             return normalize_ollama_base_url(text)
+    # Some tests intentionally pass default=None to verify the missing-config error path.
     raise ValueError(
         "Ollama base URL not configured. Set --ollama-base-url, "
         f"{LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR}, {COMPAT_OLLAMA_BASE_URL_ENV_VAR}, "
