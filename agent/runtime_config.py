@@ -41,12 +41,17 @@ def resolve_ollama_base_url(
     """Resolve the effective Ollama base URL.
 
     Canonical callers should use cli_override/env/config_value/default. The
-    cli_base_url/env_base_url aliases remain for older callers and tests.
+    cli_base_url/env_base_url aliases remain for older callers and tests and
+    should be treated as deprecated compatibility paths.
     """
     env_map = os.environ if env is None else env
     explicit_config = _string(config_value)
     cfg_value = _string(cfg.get("ollama_base_url")) if cfg is not None else ""
-    cli_candidate = cli_override if cli_override is not None else cli_base_url
+    cli_override_text = _string(cli_override)
+    cli_base_url_text = _string(cli_base_url)
+    if cli_override_text and cli_base_url_text and cli_override_text != cli_base_url_text:
+        raise ValueError("Conflicting Ollama base URL overrides were provided.")
+    cli_candidate = cli_override_text or cli_base_url_text
     config_candidate = explicit_config or cfg_value
     # config_value is the canonical explicit keyword used by newer callers;
     # cfg["ollama_base_url"] keeps older call sites working when they pass cfg only.

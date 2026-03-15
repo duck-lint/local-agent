@@ -9,6 +9,7 @@ from agent.ollama_config import (
     OLLAMA_BASE_URL_FALLBACK_ENV,
     resolve_ollama_base_url,
 )
+from agent.runtime_config import resolve_ollama_base_url as resolve_runtime_ollama_base_url
 
 
 class OllamaConfigTests(unittest.TestCase):
@@ -64,6 +65,15 @@ class OllamaConfigTests(unittest.TestCase):
                 config_value="http://config.example:11434",
             )
         self.assertEqual(base_url, "http://config.example:11434")
+
+    def test_conflicting_cli_aliases_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Conflicting Ollama base URL overrides"):
+            resolve_runtime_ollama_base_url(
+                {},
+                cli_override="http://override.example:11434",
+                cli_base_url="http://legacy.example:11434",
+                env={},
+            )
 
     def test_scheme_is_required(self) -> None:
         with self.assertRaises(ValueError):
