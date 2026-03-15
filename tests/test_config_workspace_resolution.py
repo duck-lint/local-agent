@@ -195,7 +195,7 @@ class OllamaBaseUrlResolutionTests(unittest.TestCase):
             self.assertEqual(resolve_ollama_base_url(cfg), "http://10.0.0.7:11434")
 
 
-class OllamaBaseUrlRuntimeResolutionTests(unittest.TestCase):
+class OllamaBaseUrlEnvPrecedenceTests(unittest.TestCase):
     def test_prefers_local_agent_env_over_config_and_normalizes_trailing_slash(self) -> None:
         cfg = {"ollama_base_url": "http://127.0.0.1:11434"}
         resolved = resolve_ollama_base_url(

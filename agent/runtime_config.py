@@ -47,6 +47,8 @@ def resolve_ollama_base_url(
     explicit_config = _string(config_value)
     cfg_value = _string(cfg.get("ollama_base_url")) if cfg is not None else ""
     cli_candidate = cli_override if cli_override is not None else cli_base_url
+    # config_value is the canonical explicit keyword used by newer callers;
+    # cfg["ollama_base_url"] keeps older call sites working when they pass cfg only.
     candidates = [
         cli_candidate,
         env_base_url,
