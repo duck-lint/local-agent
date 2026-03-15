@@ -250,6 +250,24 @@ Requirements:
 - repo config available at `configs/default.yaml` (always used; see Config location below)
 - default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
 
+Ollama host selection:
+- Effective precedence for the Ollama base URL is: existing CLI override if one is ever added for a specific command, otherwise `LOCAL_AGENT_OLLAMA_BASE_URL`, otherwise repo config `ollama_base_url`, otherwise the built-in default `http://127.0.0.1:11434`.
+- `LOCAL_AGENT_WORKROOT` and `--workroot` only change the external data root. They do not change which Ollama host is used.
+- Example local default:
+
+```bash
+python -m agent doctor --json
+```
+
+- Example LAN-hosted Ollama on a second PC:
+
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434
+python -m agent doctor --json
+python -m agent chat "ping"
+python -m agent ask "Summarize indexed evidence."
+```
+
 Install (editable):
 
 ```bash
@@ -286,6 +304,7 @@ Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.
 - Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
+- `LOCAL_AGENT_OLLAMA_BASE_URL` is a runtime-only host override for Ollama connectivity; it does not relocate config or workroot data.
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
@@ -444,6 +463,7 @@ Top-level:
 - `full_evidence_triggers`
 - `temperature`
 - `ollama_base_url`
+- `LOCAL_AGENT_OLLAMA_BASE_URL` (runtime env override for `ollama_base_url`)
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
