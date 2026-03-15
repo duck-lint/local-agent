@@ -52,6 +52,11 @@ from agent.phase3 import (
     resolve_memory_db_path,
     run_embed_phase,
 )
+from agent.ollama_config import (
+    OLLAMA_BASE_URL_ENV,
+    OLLAMA_BASE_URL_FALLBACK_ENV,
+    resolve_ollama_base_url,
+)
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.retrieval import RetrievalResult, retrieve
 from agent.tools import TOOLS, ToolError, configure_tool_security, get_read_text_file_policy
@@ -3176,6 +3181,15 @@ def main() -> int:
         default=None,
         help=f"Data root for runs/corpus/scratch (or set {WORKROOT_ENV_VAR}).",
     )
+    parser.add_argument(
+        "--ollama-base-url",
+        type=str,
+        default=None,
+        help=(
+            "Override Ollama host (scheme+host[:port]). "
+            f"Precedence: flag > {OLLAMA_BASE_URL_ENV} > {OLLAMA_BASE_URL_FALLBACK_ENV} > config."
+        ),
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_chat = sub.add_parser("chat", help="Send a single prompt.")
@@ -3321,6 +3335,12 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
+        cfg["ollama_base_url"] = resolve_ollama_base_url(
+            cli_override=getattr(args, "ollama_base_url", None),
+            env=os.environ,
+            config_value=cfg.get("ollama_base_url"),
+            default=DEFAULT_CONFIG.get("ollama_base_url"),
+        )
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,
