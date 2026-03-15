@@ -14,6 +14,7 @@ from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
+from agent.ollama_config import OLLAMA_BASE_URL_ENV_VAR
 from agent.memory_db import connect_db as connect_memory_db
 from agent.memory_db import init_db as init_memory_db
 from agent.phase3 import build_phase3_cfg, resolve_embeddings_db_path, run_embed_phase
@@ -361,6 +362,36 @@ class Phase3EmbedDoctorTests(unittest.TestCase):
         failed_codes, summary = self._doctor(copy.deepcopy(self.cfg), require_phase3=True)
         self.assertIn("DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING", failed_codes)
         self.assertEqual(int(summary["missing_embeddings"]), 0)
+
+    def test_run_embed_phase_uses_env_ollama_base_url(self) -> None:
+        phase3_cfg = build_phase3_cfg(self.cfg)
+        seen: dict[str, str] = {}
+
+        def _capture_factory(provider: str, model_id: str, base_url: str, timeout_s: int) -> _DummyEmbedder:
+            seen["provider"] = provider
+            seen["model_id"] = model_id
+            seen["base_url"] = base_url
+            seen["timeout_s"] = str(timeout_s)
+            return _dummy_factory(provider, model_id, base_url, timeout_s)
+
+        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.25:11434"}):
+            summary = run_embed_phase(
+                cfg=self.cfg,
+                security_root=self.workroot,
+                phase2_db_path=self.db_path,
+                phase3_cfg=phase3_cfg,
+                embedder_factory=_capture_factory,
+            )
+
+        self.assertEqual(seen["provider"], "ollama")
+        self.assertEqual(seen["base_url"], "http://192.168.1.25:11434")
+        self.assertEqual(
+            summary.embed_runtime_fingerprint,
+            build_ollama_runtime_fingerprint(
+                base_url="http://192.168.1.25:11434",
+                model_id=self.cfg["phase3"]["embed"]["model_id"],
+            ),
+        )
 
     def test_doctor_flags_orphan_embeddings_in_require_phase3_mode(self) -> None:
         phase3_cfg = build_phase3_cfg(self.cfg)

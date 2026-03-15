@@ -1,11 +1,18 @@
 {
   "name": "local-agent",
-  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bullseye",
-  "runArgs": [
-    "--add-host=host.docker.internal:host-gateway"
-  ],
-  "remoteEnv": {
-    "LOCAL_AGENT_OLLAMA_BASE_URL": "http://host.docker.internal:11434"
+  "image": "mcr.microsoft.com/devcontainers/python:1-3.11-bookworm",
+  "postCreateCommand": "pip install -e .",
+  "portsAttributes": {
+    "11434": {
+      "label": "Ollama API",
+      "onAutoForward": "ignore"
+    }
   },
-  "postCreateCommand": "pip install -e ."
+  "customizations": {
+    "vscode": {
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
 }

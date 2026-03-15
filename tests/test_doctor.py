@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from agent.__main__ import collect_doctor_checks, deep_merge_config
+from agent.ollama_config import OLLAMA_BASE_URL_ENV_VAR
 from agent.index_db import connect_db
 from agent.indexer import SourceSpec, index_sources
 from agent.tools import configure_tool_security
@@ -104,6 +107,26 @@ class DoctorChecksTests(unittest.TestCase):
         failures = [c for c in checks if not c.ok]
         self.assertEqual(failures, [])
 
+    def test_collect_doctor_checks_uses_env_ollama_base_url(self) -> None:
+        seen: dict[str, str] = {}
+
+        def _fake_ensure(base_url: str, timeout_s: int) -> None:
+            seen["base_url"] = base_url
+            seen["timeout_s"] = str(timeout_s)
+
+        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV_VAR: "http://192.168.1.20:11434"}):
+            with patch("agent.__main__.ensure_ollama_up", side_effect=_fake_ensure):
+                checks = collect_doctor_checks(
+                    deep_merge_config({}, self.cfg),
+                    resolved_config_path=self.config_path,
+                    roots=self.roots,
+                    check_ollama=True,
+                )
+
+        self.assertEqual(seen["base_url"], "http://192.168.1.20:11434")
+        ok_messages = {c.error_code: c.message for c in checks if c.ok}
+        self.assertEqual(ok_messages["DOCTOR_OLLAMA_OK"], "Ollama reachable at http://192.168.1.20:11434.")
+
     def test_collect_doctor_checks_omits_chunkless_failure_for_non_indexable_docs(self) -> None:
         (self.corpus / "frontmatter_only.md").write_text(
             "---\n"
@@ -138,6 +161,22 @@ class DoctorChecksTests(unittest.TestCase):
         ok_codes = {c.error_code for c in checks if c.ok}
         self.assertNotIn("DOCTOR_DOCS_WITHOUT_CHUNKS", failure_codes)
         self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS_OK", ok_codes)
+
+    def test_collect_doctor_checks_redacts_invalid_ollama_base_url(self) -> None:
+        bad_cfg = deep_merge_config({}, self.cfg)
+        bad_cfg["ollama_base_url"] = "http://example.test:11434/api?token=secret"
+
+        checks = collect_doctor_checks(
+            bad_cfg,
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=True,
+        )
+
+        ollama_failures = [c for c in checks if c.error_code == "DOCTOR_OLLAMA_UNREACHABLE"]
+        self.assertEqual(len(ollama_failures), 1)
+        self.assertNotIn(bad_cfg["ollama_base_url"], ollama_failures[0].message)
+        self.assertIn("must not include query", ollama_failures[0].message)
 
     def test_collect_doctor_checks_detects_missing_chunk_key(self) -> None:
         with connect_db(self.db_path) as conn:
