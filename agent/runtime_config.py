@@ -38,12 +38,17 @@ def resolve_ollama_base_url(
     config_value: Any = None,
     default: Any = DEFAULT_OLLAMA_BASE_URL,
 ) -> str:
+    """Resolve the effective Ollama base URL.
+
+    Canonical callers should use cli_override/env/config_value/default. The
+    cli_base_url/env_base_url aliases remain for older callers and tests.
+    """
     env_map = os.environ if env is None else env
     explicit_config = _string(config_value)
     cfg_value = _string(cfg.get("ollama_base_url")) if cfg is not None else ""
+    cli_candidate = cli_override if cli_override is not None else cli_base_url
     candidates = [
-        cli_override,
-        cli_base_url,
+        cli_candidate,
         env_base_url,
         env_map.get(LOCAL_AGENT_OLLAMA_BASE_URL_ENV_VAR),
         env_map.get(COMPAT_OLLAMA_BASE_URL_ENV_VAR),

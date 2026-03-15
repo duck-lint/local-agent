@@ -938,6 +938,7 @@ def collect_doctor_checks(
                         if provider == "ollama":
                             runtime_base_url = resolve_ollama_base_url(cfg)
                         else:
+                            # create_embedder() requires a string even though torch ignores base_url.
                             runtime_base_url = DEFAULT_OLLAMA_BASE_URL
                         runtime_embedder = create_embedder(
                             provider=provider,
