@@ -28,6 +28,10 @@ For torch-first embeddings:
 ```bash
 pip install -e ".[torch-embed]"
 ```
+For the optional devcontainer / Codespaces path, open the repo in the included `.devcontainer` and the container will install:
+```bash
+python -m pip install -e ".[dev]"
+```
 3. Repo config exists (always used):
 - Runtime config path is fixed to `local-agent/configs/default.yaml`.
 - Launch directory does not change config selection.
@@ -76,6 +80,16 @@ local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
 LOCAL_AGENT_WORKROOT=../local-agent-workroot LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
 ```
+
+Codespaces / devcontainer quickstart:
+```bash
+python -m unittest discover -s tests -v
+python -m agent doctor --no-ollama
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
+export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
+```
+
+Keep Ollama and workroot external to the repo checkout. In a remote container, that usually means mounting, copying, or otherwise provisioning the workroot explicitly rather than assuming sibling host paths already exist.
 
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
 

@@ -7,6 +7,7 @@ from pathlib import Path
 from unittest.mock import patch
 
 from agent.__main__ import (
+    apply_env_config_overrides,
     deep_merge_config,
     discover_config_path,
     load_config_with_path,
@@ -44,6 +45,7 @@ class ConfigWorkspaceResolutionTests(unittest.TestCase):
 model: gpt-oss:120b
 model_fast: repo-pinned-model
 model_big: gpt-oss:120b
+ollama_base_url: http://127.0.0.1:11434
 security:
   allowed_roots:
     - "../workroot/allowed/corpus/"
@@ -99,6 +101,14 @@ security:
         self.assertEqual(cfg, {})
         self.assertIsNone(cfg_path)
 
+    def test_env_ollama_base_url_overrides_repo_config(self) -> None:
+        with patch.dict(os.environ, {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://ollama.example:11434"}):
+            cfg, cfg_path = load_config_with_path(start_dir=Path.cwd(), repo_root=self.repo_root)
+
+        expected_cfg = (self.repo_root / "configs" / "default.yaml").resolve()
+        self.assertEqual(cfg_path.resolve(), expected_cfg)
+        self.assertEqual(cfg.get("ollama_base_url"), "http://ollama.example:11434")
+
 
 class RereadPathSelectionTests(unittest.TestCase):
     def test_prefers_original_requested_path(self) -> None:
@@ -151,6 +161,21 @@ class ConfigMergeTests(unittest.TestCase):
         self.assertEqual(merged["phase2"]["chunking"]["max_chars"], 2048)
         self.assertEqual(merged["phase2"]["chunking"]["overlap"], 120)
         self.assertEqual(merged["phase2"]["sources"], [{"name": "corpus"}])
+
+    def test_apply_env_config_overrides_uses_explicit_environ(self) -> None:
+        cfg = {
+            "ollama_base_url": "http://127.0.0.1:11434",
+            "security": {"deny_hidden_paths": True},
+        }
+
+        updated = apply_env_config_overrides(
+            cfg,
+            environ={"LOCAL_AGENT_OLLAMA_BASE_URL": "  http://ollama.internal:11434  "},
+        )
+
+        self.assertEqual(updated["ollama_base_url"], "http://ollama.internal:11434")
+        self.assertEqual(updated["security"], cfg["security"])
+        self.assertEqual(cfg["ollama_base_url"], "http://127.0.0.1:11434")
 
 
 class OllamaBaseUrlResolutionTests(unittest.TestCase):
