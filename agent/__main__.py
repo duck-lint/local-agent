@@ -944,11 +944,15 @@ def collect_doctor_checks(
                 phase3_summary["embeddings_total"] = embeddings_total
                 if embed_config_valid and embeddings_total > 0:
                     try:
-                        runtime_ollama_base_url = resolve_ollama_base_url(cfg)
+                        if provider == "ollama":
+                            runtime_base_url = resolve_ollama_base_url(cfg)
+                        else:
+                            # For non-Ollama providers (e.g., "torch"), do not require an Ollama base URL.
+                            runtime_base_url = None
                         runtime_embedder = create_embedder(
                             provider=provider,
                             model_id=embed_model_id,
-                            base_url=runtime_ollama_base_url,
+                            base_url=runtime_base_url,
                             timeout_s=cfg["timeout_s"],
                             phase3_cfg=phase3_cfg,
                         )
