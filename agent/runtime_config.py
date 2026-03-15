@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 from typing import Any, Mapping
+from urllib.parse import urlsplit, urlunsplit
 
 
 DEFAULT_OLLAMA_BASE_URL = "http://127.0.0.1:11434"
@@ -23,7 +24,17 @@ def normalize_ollama_base_url(value: Any, *, default: str = DEFAULT_OLLAMA_BASE_
     text = _string(value) or default
     if "://" not in text:
         text = f"http://{text}"
-    return text.rstrip("/")
+
+    parsed = urlsplit(text)
+
+    # Basic validation to ensure we have a usable HTTP(S) base URL.
+    if parsed.scheme not in ("http", "https") or not parsed.netloc:
+        raise ValueError(f"Invalid Ollama base URL: {text!r}")
+
+    # Normalize by trimming at most one trailing slash from the path component.
+    path = parsed.path[:-1] if parsed.path.endswith("/") else parsed.path
+    normalized = parsed._replace(path=path)
+    return urlunsplit(normalized)
 
 
 def resolve_ollama_base_url(
