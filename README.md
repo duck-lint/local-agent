@@ -289,7 +289,7 @@ This repo now includes a minimal `.devcontainer/devcontainer.json` for Python 3.
 Open the repository in a devcontainer or GitHub Codespace, then use:
 
 ```bash
-python -m pytest -q
+python -m unittest discover -s tests -v
 python -m agent doctor --no-ollama
 ```
 
