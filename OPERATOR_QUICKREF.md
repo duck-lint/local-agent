@@ -8,6 +8,7 @@ This is the short runbook. For full architecture and policy detail, see `README.
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
+If Ollama is not local, use `--ollama-base-url` or `LOCAL_AGENT_OLLAMA_BASE_URL` instead of editing code paths.
 2. Python env exists and deps installed (`requests`, `pyyaml`).
 ```bash
 python -m venv .venv
@@ -28,6 +29,8 @@ pip install -e ".[torch-embed]"
 - Launch directory does not change config selection.
 - No config file is required in `local-agent-workroot`.
 - Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
+- Optional Ollama endpoint override: `--ollama-base-url` (or `LOCAL_AGENT_OLLAMA_BASE_URL`, or config `ollama_base_url`) with precedence `--ollama-base-url` > env > config.
+- Only use `scheme://host[:port]` values. Paths, query strings, fragments, and embedded credentials are rejected.
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
@@ -58,6 +61,7 @@ python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
 python -m agent doctor --require-phase3 --json
+python -m agent --ollama-base-url http://host.docker.internal:11434 doctor
 local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
 local-agent embed --json
@@ -68,6 +72,11 @@ local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes 
 ```
 
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
+
+Remote/devcontainer safety:
+- Point the agent only at Ollama endpoints you control (localhost, private LAN, or private dev environment).
+- Do not publish or auto-forward port `11434` to the public internet from Codespaces/devcontainers.
+- For offline validation inside a remote dev environment, use `python -m agent doctor --no-ollama`.
 
 Torch-first phase3 flow:
 ```bash

@@ -11,6 +11,8 @@ big_triggers:
   - in depth
   - detailed
   - analysis
+# Override with --ollama-base-url or LOCAL_AGENT_OLLAMA_BASE_URL when you need a
+# trusted remote/devcontainer endpoint. Use only scheme://host[:port].
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
 max_tokens_big_second: 4500

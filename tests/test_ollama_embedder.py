@@ -25,6 +25,14 @@ class _FakeResponse:
 
 
 class OllamaEmbedderTests(unittest.TestCase):
+    def test_constructor_normalizes_base_url(self) -> None:
+        emb = OllamaEmbedder(base_url="https://Example.test:11434/", model_id="m", timeout_s=2)
+        self.assertEqual(emb.base_url, "https://example.test:11434")
+
+    def test_constructor_rejects_invalid_base_url(self) -> None:
+        with self.assertRaisesRegex(ValueError, "must not include a path"):
+            OllamaEmbedder(base_url="http://example.test:11434/api", model_id="m", timeout_s=2)
+
     def test_embed_uses_primary_embed_endpoint_when_available(self) -> None:
         calls: list[str] = []
 
@@ -81,6 +89,21 @@ class OllamaEmbedderTests(unittest.TestCase):
         text = str(ctx.exception)
         self.assertIn("/api/embed", text)
         self.assertIn("/api/embeddings", text)
+
+    def test_embed_redacts_raw_base_url_from_network_errors(self) -> None:
+        emb = OllamaEmbedder(base_url="http://example.test:11434", model_id="m", timeout_s=2)
+
+        def _post(url, json, timeout):  # type: ignore[no-untyped-def]
+            _ = json, timeout
+            raise requests.ConnectionError(f"failed to reach {url}")
+
+        with patch("agent.embedders.ollama.requests.post", side_effect=_post):
+            with self.assertRaises(RuntimeError) as ctx:
+                emb.embed_texts(["a"])
+
+        text = str(ctx.exception)
+        self.assertIn("<ollama-base-url>/api/embed", text)
+        self.assertNotIn("http://example.test:11434", text)
 
 
 if __name__ == "__main__":

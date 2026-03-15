@@ -24,6 +24,7 @@ from agent.citation_audit import (
 from agent.embedding_fingerprint import (
     compute_embed_sig,
 )
+from agent.embedders.ollama import normalize_ollama_base_url, redact_ollama_error_detail
 from agent.embeddings_db import count_orphan_embeddings
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.embeddings_db import fetch_embeddings_map
@@ -109,6 +110,7 @@ DEFAULT_CONFIG: Dict[str, Any] = {
 
 READ_TEXT_FILE_HARD_CAP = 200_000
 WORKROOT_ENV_VAR = "LOCAL_AGENT_WORKROOT"
+OLLAMA_BASE_URL_ENV_VAR = "LOCAL_AGENT_OLLAMA_BASE_URL"
 ASK_EVIDENCE_TOP_N = 8
 
 
@@ -192,6 +194,26 @@ def _resolve_candidate_root(raw_value: Optional[str], base_dir: Path) -> Optiona
     if not p.is_absolute():
         p = base_dir / p
     return p.resolve()
+
+
+def resolve_ollama_base_url(
+    cfg: Dict[str, Any],
+    *,
+    cli_base_url: Optional[str] = None,
+    env_base_url: Optional[str] = None,
+) -> str:
+    cli_value = _string_config_value(cli_base_url)
+    env_value = _string_config_value(
+        env_base_url if env_base_url is not None else os.environ.get(OLLAMA_BASE_URL_ENV_VAR)
+    )
+    cfg_value = _string_config_value(cfg.get("ollama_base_url"))
+    selected = cli_value or env_value or cfg_value or str(DEFAULT_CONFIG["ollama_base_url"])
+    return normalize_ollama_base_url(selected)
+
+
+def _ollama_request_error(action: str, base_url: str, exc: Exception) -> RuntimeError:
+    detail = redact_ollama_error_detail(str(exc), normalize_ollama_base_url(base_url))
+    return RuntimeError(f"Ollama {action} failed: {detail}")
 
 
 def resolve_runtime_roots(
@@ -676,13 +698,14 @@ def collect_doctor_checks(
 
     if check_ollama:
         try:
-            ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+            ollama_base_url = resolve_ollama_base_url(cfg)
+            ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
             ollama_ready = True
             checks.append(
                 DoctorCheckResult(
                     ok=True,
                     error_code="DOCTOR_OLLAMA_OK",
-                    message=f"Ollama reachable at {cfg['ollama_base_url']}.",
+                    message="Ollama reachable at the configured endpoint.",
                 )
             )
         except Exception as exc:
@@ -691,7 +714,11 @@ def collect_doctor_checks(
                     ok=False,
                     error_code="DOCTOR_OLLAMA_UNREACHABLE",
                     message=f"Ollama endpoint is unreachable: {exc}",
-                    suggested_fix="Start Ollama (`ollama serve`) and rerun: python -m agent doctor",
+                    suggested_fix=(
+                        "Start Ollama (`ollama serve`) or set "
+                        f"{OLLAMA_BASE_URL_ENV_VAR}/--ollama-base-url to a trusted endpoint, then rerun: "
+                        "python -m agent doctor"
+                    ),
                 )
             )
 
@@ -905,10 +932,11 @@ def collect_doctor_checks(
                 phase3_summary["embeddings_total"] = embeddings_total
                 if embed_config_valid and embeddings_total > 0:
                     try:
+                        runtime_ollama_base_url = resolve_ollama_base_url(cfg)
                         runtime_embedder = create_embedder(
                             provider=provider,
                             model_id=embed_model_id,
-                            base_url=cfg["ollama_base_url"],
+                            base_url=runtime_ollama_base_url,
                             timeout_s=cfg["timeout_s"],
                             phase3_cfg=phase3_cfg,
                         )
@@ -1090,10 +1118,11 @@ def collect_doctor_checks(
             smoke_fetch_k = max(10, configured_fetch if configured_fetch > 0 else auto_fetch)
             lexical_k = _as_int(retrieve_cfg.get("lexical_k"), 20)
             fusion = _string_config_value(retrieve_cfg.get("fusion")) or "simple_union"
+            smoke_ollama_base_url = resolve_ollama_base_url(cfg)
             smoke_embedder = create_embedder(
                 provider=provider,
                 model_id=embed_model_id,
-                base_url=cfg["ollama_base_url"],
+                base_url=smoke_ollama_base_url,
                 timeout_s=cfg["timeout_s"],
                 phase3_cfg=phase3_cfg,
             )
@@ -1526,8 +1555,12 @@ def redact_tool_result_for_log(tool_result: Dict[str, Any], preview_chars: int =
 
 
 def ensure_ollama_up(base_url: str, timeout_s: int) -> None:
-    r = requests.get(f"{base_url}/api/tags", timeout=timeout_s)
-    r.raise_for_status()
+    normalized_base_url = normalize_ollama_base_url(base_url)
+    try:
+        r = requests.get(f"{normalized_base_url}/api/tags", timeout=timeout_s)
+        r.raise_for_status()
+    except requests.RequestException as exc:
+        raise _ollama_request_error("reachability check", normalized_base_url, exc) from exc
 
 
 def ollama_chat(
@@ -1538,6 +1571,7 @@ def ollama_chat(
     max_tokens: int,
     timeout_s: int,
 ) -> Dict[str, Any]:
+    normalized_base_url = normalize_ollama_base_url(base_url)
     payload = {
         "model": model,
         "messages": messages,
@@ -1547,9 +1581,12 @@ def ollama_chat(
             "num_predict": int(max_tokens),
         },
     }
-    r = requests.post(f"{base_url}/api/chat", json=payload, timeout=timeout_s)
-    r.raise_for_status()
-    data = r.json()
+    try:
+        r = requests.post(f"{normalized_base_url}/api/chat", json=payload, timeout=timeout_s)
+        r.raise_for_status()
+        data = r.json()
+    except requests.RequestException as exc:
+        raise _ollama_request_error("chat request", normalized_base_url, exc) from exc
     if not isinstance(data, dict):
         raise ValueError("Unexpected Ollama response type; expected JSON object")
     return data
@@ -1982,9 +2019,10 @@ def run_chat(
     record.update(root_log_fields(runtime_roots))
 
     try:
-        ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+        ollama_base_url = resolve_ollama_base_url(cfg)
+        ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
         resp = ollama_chat(
-            base_url=cfg["ollama_base_url"],
+            base_url=ollama_base_url,
             model=cfg["model"],
             messages=[{"role": "user", "content": prompt}],
             temperature=cfg["temperature"],
@@ -2057,7 +2095,8 @@ def run_ask_one_tool(
     record.update(root_log_fields(runtime_roots))
 
     try:
-        ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+        ollama_base_url = resolve_ollama_base_url(cfg)
+        ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
 
         messages: List[Dict[str, str]] = [
             {"role": "system", "content": build_tool_system_prompt()},
@@ -2065,7 +2104,7 @@ def run_ask_one_tool(
         ]
 
         first = ollama_chat(
-            base_url=cfg["ollama_base_url"],
+            base_url=ollama_base_url,
             model=first_model,
             messages=messages,
             temperature=cfg["temperature"],
@@ -2250,7 +2289,7 @@ def run_ask_one_tool(
                 second_timeout_s = max(cfg["timeout_s"], second_big_timeout)
 
             second = ollama_chat(
-                base_url=cfg["ollama_base_url"],
+                base_url=ollama_base_url,
                 model=second_model,
                 messages=messages,
                 temperature=cfg["temperature"],
@@ -2302,7 +2341,7 @@ def run_ask_one_tool(
                     ),
                 }
                 second_retry = ollama_chat(
-                    base_url=cfg["ollama_base_url"],
+                    base_url=ollama_base_url,
                     model=second_model,
                     messages=retry_messages,
                     temperature=cfg["temperature"],
@@ -2598,8 +2637,10 @@ def run_embed(
     ensure_phase3_dirs(security_root)
 
     try:
+        cfg_for_run = dict(cfg)
+        cfg_for_run["ollama_base_url"] = resolve_ollama_base_url(cfg)
         summary = run_embed_phase(
-            cfg=cfg,
+            cfg=cfg_for_run,
             security_root=security_root,
             phase2_db_path=phase2_db_path,
             phase3_cfg=phase3_cfg,
@@ -2915,7 +2956,8 @@ def run_ask_grounded(
     record.update(root_log_fields(runtime_roots))
 
     try:
-        ensure_ollama_up(cfg["ollama_base_url"], timeout_s=cfg["timeout_s"])
+        ollama_base_url = resolve_ollama_base_url(cfg)
+        ensure_ollama_up(ollama_base_url, timeout_s=cfg["timeout_s"])
         phase2_cfg = _build_phase2_cfg(cfg)
         phase3_cfg = _build_phase3_cfg(cfg)
         phase2_db_path = _resolve_phase2_db_path(phase2_cfg, security_root)
@@ -2952,7 +2994,7 @@ def run_ask_grounded(
         embedder = create_embedder(
             provider=provider,
             model_id=model_id,
-            base_url=cfg["ollama_base_url"],
+            base_url=ollama_base_url,
             timeout_s=cfg["timeout_s"],
             phase3_cfg=phase3_cfg,
         )
@@ -3037,7 +3079,7 @@ def run_ask_grounded(
         else:
             prompt = _build_grounded_user_prompt(question, retrieval_result, top_n=sanitized_top_n)
             second = ollama_chat(
-                base_url=cfg["ollama_base_url"],
+                base_url=ollama_base_url,
                 model=second_model,
                 messages=[
                     {"role": "system", "content": _build_grounded_system_prompt()},
@@ -3175,6 +3217,12 @@ def main() -> int:
         type=str,
         default=None,
         help=f"Data root for runs/corpus/scratch (or set {WORKROOT_ENV_VAR}).",
+    )
+    parser.add_argument(
+        "--ollama-base-url",
+        type=str,
+        default=None,
+        help=f"Override Ollama endpoint (or set {OLLAMA_BASE_URL_ENV_VAR}). Use only scheme://host[:port].",
     )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
@@ -3321,6 +3369,10 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
+        cfg["ollama_base_url"] = resolve_ollama_base_url(
+            cfg,
+            cli_base_url=getattr(args, "ollama_base_url", None),
+        )
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,

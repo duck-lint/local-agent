@@ -139,6 +139,22 @@ class DoctorChecksTests(unittest.TestCase):
         self.assertNotIn("DOCTOR_DOCS_WITHOUT_CHUNKS", failure_codes)
         self.assertIn("DOCTOR_DOCS_WITHOUT_CHUNKS_OK", ok_codes)
 
+    def test_collect_doctor_checks_redacts_invalid_ollama_base_url(self) -> None:
+        bad_cfg = deep_merge_config({}, self.cfg)
+        bad_cfg["ollama_base_url"] = "http://example.test:11434/api?token=secret"
+
+        checks = collect_doctor_checks(
+            bad_cfg,
+            resolved_config_path=self.config_path,
+            roots=self.roots,
+            check_ollama=True,
+        )
+
+        ollama_failures = [c for c in checks if c.error_code == "DOCTOR_OLLAMA_UNREACHABLE"]
+        self.assertEqual(len(ollama_failures), 1)
+        self.assertNotIn(bad_cfg["ollama_base_url"], ollama_failures[0].message)
+        self.assertIn("must not include query", ollama_failures[0].message)
+
     def test_collect_doctor_checks_detects_missing_chunk_key(self) -> None:
         with connect_db(self.db_path) as conn:
             conn.execute("UPDATE chunks SET chunk_key = NULL")

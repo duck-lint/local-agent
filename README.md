@@ -246,7 +246,7 @@ Redaction rule:
 
 Requirements:
 - Python 3.10+ (3.11 recommended)
-- Ollama running locally (default `http://127.0.0.1:11434`)
+- Ollama running locally (default `http://127.0.0.1:11434`) or at an explicitly trusted remote endpoint via `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL`
 - repo config available at `configs/default.yaml` (always used; see Config location below)
 - default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
 
@@ -285,7 +285,7 @@ pip install -e .
 Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.
-- Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
+- Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, `ollama_base_url` comes from `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL` / config `ollama_base_url`, and `security_root` is the path anchor used for tool security and run logs.
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
@@ -309,7 +309,13 @@ Smoke test:
 .venv\\Scripts\\python -m agent ask "Read allowed/corpus/secret.md and summarize it."
 local-agent ask "Read allowed/corpus/secret.md and summarize it."
 local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it."
+local-agent --ollama-base-url http://127.0.0.1:11434 doctor
 ```
+
+Remote/devcontainer note:
+- Remote Ollama changes the trust boundary from loopback-only to “whoever serves that URL”. Use only endpoints you control on localhost, a private LAN, or a private dev environment.
+- `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL` accept only `scheme://host[:port]`. Paths, query strings, fragments, and embedded credentials are rejected.
+- Do not expose Ollama (`11434`) publicly from Codespaces/devcontainers. Keep forwarding opt-in and private; use `python -m agent doctor --no-ollama` when you only need offline checks.
 
 ## CLI usage and recipes
 
@@ -320,6 +326,7 @@ python -m agent chat "<prompt>"
 python -m agent ask "<question>"
 python -m agent doctor
 python -m agent doctor --no-ollama
+python -m agent --ollama-base-url http://host.docker.internal:11434 doctor
 local-agent chat "<prompt>"
 local-agent ask "<question>"
 local-agent doctor
@@ -443,7 +450,7 @@ Top-level:
 - `max_chars_full_read`
 - `full_evidence_triggers`
 - `temperature`
-- `ollama_base_url`
+- `ollama_base_url` (overridden by `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL`; must be `scheme://host[:port]`)
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
