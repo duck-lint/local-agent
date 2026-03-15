@@ -51,5 +51,5 @@ def resolve_ollama_base_url(
 
     raise ValueError(
         "Ollama base URL not configured. Set --ollama-base-url, "
-        f"{OLLAMA_BASE_URL_ENV}, {OLLAMA_BASE_URL_FALLBACK_ENV}, or configure ollama_base_url."
+        f"{OLLAMA_BASE_URL_ENV}, {OLLAMA_BASE_URL_FALLBACK_ENV}, or configure ollama_base_url in configs/default.yaml."
     )

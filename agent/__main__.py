@@ -3337,7 +3337,7 @@ def main() -> int:
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
         cfg["ollama_base_url"] = resolve_ollama_base_url(
             cli_override=getattr(args, "ollama_base_url", None),
-            env=os.environ,
+            env=None,
             config_value=cfg.get("ollama_base_url"),
             default=DEFAULT_CONFIG.get("ollama_base_url"),
         )
