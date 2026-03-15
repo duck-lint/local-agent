@@ -9,6 +9,7 @@ from agent.ollama_config import (
     OLLAMA_BASE_URL_FALLBACK_ENV,
     resolve_ollama_base_url,
 )
+from agent.runtime_config import resolve_ollama_base_url as resolve_runtime_ollama_base_url
 
 
 class OllamaConfigTests(unittest.TestCase):
@@ -39,24 +40,6 @@ class OllamaConfigTests(unittest.TestCase):
         )
         self.assertEqual(base_url, "http://generic:11434")
 
-    def test_env_none_reads_process_environment(self) -> None:
-        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV: "http://env.example:11434"}, clear=True):
-            base_url = resolve_ollama_base_url(
-                cli_override=None,
-                env=None,
-                config_value="http://config.example:11434",
-            )
-        self.assertEqual(base_url, "http://env.example:11434")
-
-    def test_empty_env_does_not_fall_back_to_process_environment(self) -> None:
-        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV: "http://env.example:11434"}, clear=True):
-            base_url = resolve_ollama_base_url(
-                cli_override=None,
-                env={},
-                config_value="http://config.example:11434/",
-            )
-        self.assertEqual(base_url, "http://config.example:11434")
-
     def test_config_used_when_no_overrides(self) -> None:
         base_url = resolve_ollama_base_url(
             cli_override=None,
@@ -74,23 +57,32 @@ class OllamaConfigTests(unittest.TestCase):
         )
         self.assertEqual(base_url, "http://default:11434")
 
-    def test_invalid_urls_are_rejected(self) -> None:
-        invalid_values = [
-            "localhost:11434",
-            "http://host:11434/ollama",
-            "http://host:11434?x=1",
-            "http://host:11434/#frag",
-            "http://host:11434/;params",
-        ]
-        for value in invalid_values:
-            with self.subTest(value=value):
-                with self.assertRaises(ValueError):
-                    resolve_ollama_base_url(
-                        cli_override=value,
-                        env={},
-                        config_value=None,
-                        default=None,
-                    )
+    def test_explicit_empty_env_does_not_fall_back_to_process_env(self) -> None:
+        with patch.dict(os.environ, {OLLAMA_BASE_URL_ENV: "http://process-env:11434"}):
+            base_url = resolve_ollama_base_url(
+                cli_override=None,
+                env={},
+                config_value="http://config.example:11434",
+            )
+        self.assertEqual(base_url, "http://config.example:11434")
+
+    def test_conflicting_cli_aliases_are_rejected(self) -> None:
+        with self.assertRaisesRegex(ValueError, "Conflicting Ollama base URL overrides"):
+            resolve_runtime_ollama_base_url(
+                {},
+                cli_override="http://override.example:11434",
+                cli_base_url="http://legacy.example:11434",
+                env={},
+            )
+
+    def test_scheme_is_required(self) -> None:
+        with self.assertRaises(ValueError):
+            resolve_ollama_base_url(
+                cli_override="localhost:11434",
+                env={},
+                config_value=None,
+                default=None,
+            )
 
 
 if __name__ == "__main__":

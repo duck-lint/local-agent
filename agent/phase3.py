@@ -14,7 +14,7 @@ from agent.embedding_fingerprint import (
     preprocess_chunk_text,
 )
 from agent.embedder import Embedder
-from agent.embedders.ollama import OllamaEmbedder
+from agent.embedders.ollama import OllamaEmbedder, normalize_ollama_base_url
 from agent.embedders.torch_embedder import TorchEmbedder
 from agent.embeddings_db import (
     count_orphan_embeddings,
@@ -29,6 +29,7 @@ from agent.embeddings_db import (
 )
 from agent.index_db import connect_db as connect_index_db
 from agent.index_db import init_db as init_index_db
+from agent.runtime_config import DEFAULT_OLLAMA_BASE_URL, resolve_ollama_base_url
 
 
 DEFAULT_PHASE3: dict[str, Any] = {
@@ -295,6 +296,11 @@ def create_embedder(
     timeout_s: int,
     phase3_cfg: Optional[dict[str, Any]] = None,
 ) -> Embedder:
+    """Create the configured embedder.
+
+    base_url is used only by the Ollama provider. Other providers ignore it, so
+    callers may pass a placeholder when no Ollama endpoint is required.
+    """
     if provider == "ollama":
         return OllamaEmbedder(base_url=base_url, model_id=model_id, timeout_s=timeout_s)
     if provider != "torch":
@@ -469,7 +475,7 @@ def run_embed_phase(
         )
 
     timeout_s = _as_int(cfg.get("timeout_s"), 300)
-    base_url = _string(cfg.get("ollama_base_url"), "http://127.0.0.1:11434")
+    base_url = resolve_ollama_base_url(cfg) if provider == "ollama" else DEFAULT_OLLAMA_BASE_URL
     factory = embedder_factory
     if factory is None:
         def _default_factory(p: str, m: str, b: str, t: int):

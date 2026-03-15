@@ -8,6 +8,11 @@ This is the short runbook. For full architecture and policy detail, see `README.
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
+   Or for a LAN-hosted Ollama on another machine:
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434
+curl "$LOCAL_AGENT_OLLAMA_BASE_URL/api/tags"
+```
 2. Python env exists and deps installed (`requests`, `pyyaml`).
 ```bash
 python -m venv .venv
@@ -23,11 +28,17 @@ For torch-first embeddings:
 ```bash
 pip install -e ".[torch-embed]"
 ```
+For the optional devcontainer / Codespaces path, open the repo in the included `.devcontainer` and the container will install:
+```bash
+python -m pip install -e ".[dev]"
+```
 3. Repo config exists (always used):
 - Runtime config path is fixed to `local-agent/configs/default.yaml`.
 - Launch directory does not change config selection.
 - No config file is required in `local-agent-workroot`.
 - Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
+- Optional Ollama host override: `LOCAL_AGENT_OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
+- Workroot selection stays independent from the Ollama host selection.
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
@@ -58,7 +69,9 @@ python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
 python -m agent doctor --require-phase3 --json
-python -m agent --ollama-base-url http://lan-host:11434 doctor
+python -m agent doctor --ollama-base-url http://lan-host:11434
+LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
+LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent ask "Summarize the indexed notes about coherence."
 local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
 local-agent embed --json
@@ -66,9 +79,24 @@ local-agent embed --no-prune --json
 local-agent memory list --json
 local-agent doctor
 local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
+LOCAL_AGENT_WORKROOT=../local-agent-workroot LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
 ```
 
+Codespaces / devcontainer quickstart:
+```bash
+python -m unittest discover -s tests -v
+python -m agent doctor --no-ollama
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
+export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
+```
+
+Keep Ollama and workroot external to the repo checkout. In a remote container, that usually means mounting, copying, or otherwise provisioning the workroot explicitly rather than assuming sibling host paths already exist.
+
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
+
+Optional devcontainer support:
+- `.devcontainer/devcontainer.json` keeps setup minimal and points the container at `http://host.docker.internal:11434` by default.
+- Override `LOCAL_AGENT_OLLAMA_BASE_URL` if your Ollama host differs.
 
 Torch-first phase3 flow:
 ```bash
@@ -218,4 +246,4 @@ python -m agent ask "Read dupe.md and summarize it."
 5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
    For offline preflight, use `python -m agent doctor --no-ollama`.
    Under `phase3.embed.provider: torch`, retrieval smoke still runs with `--no-ollama`.
-   For remote Ollama, pass `--ollama-base-url` before the subcommand or set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`.
+   For remote Ollama, pass `--ollama-base-url` or set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`.

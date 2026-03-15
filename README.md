@@ -245,10 +245,28 @@ Redaction rule:
 ## Setup and quickstart
 
 Requirements:
-- Python 3.10+ (3.11 recommended)
-- Ollama running locally (default `http://127.0.0.1:11434`)
+- Python 3.11+
+- Ollama reachable from the runtime environment (default `http://127.0.0.1:11434`)
 - repo config available at `configs/default.yaml` (always used; see Config location below)
 - default dependency set in `requirements.txt` includes Torch + embedding stack for Phase 3 torch-first operation
+
+Ollama host selection:
+- Effective precedence for the Ollama base URL is: `--ollama-base-url`, otherwise `LOCAL_AGENT_OLLAMA_BASE_URL`, otherwise `OLLAMA_BASE_URL`, otherwise repo config `ollama_base_url`, otherwise the built-in default `http://127.0.0.1:11434`.
+- `LOCAL_AGENT_WORKROOT` and `--workroot` only change the external data root. They do not change which Ollama host is used.
+- Example local default:
+
+```bash
+python -m agent doctor --json
+```
+
+- Example LAN-hosted Ollama on a second PC:
+
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434
+python -m agent doctor --json
+python -m agent chat "ping"
+python -m agent ask "Summarize indexed evidence."
+```
 
 Install (editable):
 
@@ -282,16 +300,64 @@ pip install -e .
 
 `phase3.embed.provider: torch` will fail unless Torch + embedding dependencies are installed.
 
+### Optional devcontainer / Codespaces development
+
+This repo now includes a minimal `.devcontainer/devcontainer.json` for Python 3.11 development. It is intentionally small: it installs the package in editable mode with the optional `dev` extra so you can run the test suite and general CLI commands, but it does not change the runtime architecture or assume Ollama is running inside the container.
+
+Open the repository in a devcontainer or GitHub Codespace, then use:
+
+```bash
+python -m unittest discover -s tests -v
+python -m agent doctor --no-ollama
+```
+
+The devcontainer installs:
+
+```bash
+python -m pip install -e ".[dev]"
+```
+
+If you also want the optional Torch embedding stack in the container, install it explicitly:
+
+```bash
+python -m pip install -e ".[dev,torch-embed]"
+```
+
+Ollama remains external. From a Codespace or any other remote Linux dev environment, point the CLI at a reachable Ollama host with:
+
+```bash
+export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
+```
+
+Use this for a remote Linux box, a forwarded tunnel, or another host that exposes the Ollama API. Do not assume `http://127.0.0.1:11434` inside the devcontainer unless you have explicitly arranged that network path yourself.
+
+Workroot also remains external to the repo. Provide it explicitly instead of storing live data under the checkout:
+
+```bash
+mkdir -p /workspaces/local-agent-workroot/allowed/corpus
+mkdir -p /workspaces/local-agent-workroot/allowed/scratch
+mkdir -p /workspaces/local-agent-workroot/runs
+export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
+```
+
+Depending on your environment, that workroot may be a mounted volume, a copied dataset, or a separately provisioned directory. The repo still expects config in `configs/default.yaml` and data in the external workroot.
+
 Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.
 - Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
+- Effective Ollama endpoint precedence is `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`, then config `ollama_base_url`, then the built-in default `http://127.0.0.1:11434`.
+
+Optional devcontainer:
+- `.devcontainer/devcontainer.json` is intentionally minimal.
+- It mounts and exports only `LOCAL_AGENT_WORKROOT`; it does not automatically configure an Ollama host.
+- If your environment exposes the host machine at `host.docker.internal`, set `LOCAL_AGENT_OLLAMA_BASE_URL=http://host.docker.internal:11434` yourself.
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
 - Point `security.allowed_roots` at your sibling workroot data folders (already set in this repo):
   - `../local-agent-workroot/allowed/corpus/`
-  - `../local-agent-workroot/allowed/runs/`
+  - `../local-agent-workroot/runs/`
   - `../local-agent-workroot/allowed/scratch/`
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
 
@@ -309,7 +375,13 @@ Smoke test:
 .venv\\Scripts\\python -m agent ask "Read allowed/corpus/secret.md and summarize it."
 local-agent ask "Read allowed/corpus/secret.md and summarize it."
 local-agent --workroot ../local-agent-workroot ask "Read allowed/corpus/secret.md and summarize it."
+local-agent --ollama-base-url http://127.0.0.1:11434 doctor
 ```
+
+Remote/devcontainer note:
+- Remote Ollama changes the trust boundary from loopback-only to “whoever serves that URL”. Use only endpoints you control on localhost, a private LAN, or a private dev environment.
+- `--ollama-base-url` / `LOCAL_AGENT_OLLAMA_BASE_URL` accept only `scheme://host[:port]`. Paths, query strings, fragments, and embedded credentials are rejected.
+- Do not expose Ollama (`11434`) publicly from Codespaces/devcontainers. Keep forwarding opt-in and private; use `python -m agent doctor --no-ollama` when you only need offline checks.
 
 ## CLI usage and recipes
 
@@ -320,6 +392,7 @@ python -m agent chat "<prompt>"
 python -m agent ask "<question>"
 python -m agent doctor
 python -m agent doctor --no-ollama
+python -m agent --ollama-base-url http://host.docker.internal:11434 doctor
 local-agent chat "<prompt>"
 local-agent ask "<question>"
 local-agent doctor
@@ -444,6 +517,7 @@ Top-level:
 - `full_evidence_triggers`
 - `temperature`
 - `ollama_base_url`
+- environment overrides: `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
@@ -481,17 +555,16 @@ Current defaults in this repo are intentionally conservative:
 ## Ollama host selection (local vs remote)
 
 - Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > `configs/default.yaml`.
-- Values must be bare `http://` or `https://` origins with a host (optionally `:port`); a trailing slash is normalized away, while paths, query strings, and fragments are rejected.
+- Values must include `http://` or `https://` and a host (optionally `:port`); trailing slash is trimmed and invalid values fail fast.
 - Local default: `http://127.0.0.1:11434`.
-- Remote/LAN example: `python -m agent --ollama-base-url http://lan-host:11434 doctor`
-- You can also set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`; the same resolved host is then used by doctor, embed, ask/chat, and retrieval smokes.
-- Devcontainer/Codespaces sessions should point at a remote/LAN Ollama host you control. Do not expose Ollama to the public internet; keep it firewalled.
+- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by doctor, embed, ask/chat, and retrieval smokes.
+- Devcontainer/Codespaces: the container does not run Ollama; point `LOCAL_AGENT_OLLAMA_BASE_URL` at a host you control on the LAN/VPN. Do not expose Ollama to the public internet; keep it firewalled.
 
 ## Optional devcontainer / Codespaces
 
-- A minimal `.devcontainer/devcontainer.json` is provided for Python 3.11. It mounts a persistent volume at `/workspaces/local-agent-workroot` and exports `LOCAL_AGENT_WORKROOT` there so workroot data stays outside the repo checkout.
-- `postCreateCommand` installs the project in editable mode and creates the expected workroot subdirectories.
-- Codespaces/devcontainer sessions should use `LOCAL_AGENT_OLLAMA_BASE_URL` or `--ollama-base-url` before the subcommand, for example `python -m agent --ollama-base-url http://lan-host:11434 doctor`.
+- A minimal `.devcontainer/devcontainer.json` is provided for Python 3.11. It mounts a persistent volume at `/workspaces/local-agent-workroot` and exports `LOCAL_AGENT_WORKROOT` there (workroot stays outside the repo).
+- `postCreateCommand` installs the project in editable mode with dev extras (`pip install -e ".[dev]"`) and creates the expected workroot subdirectories.
+- Codespaces/devcontainer sessions should point at a remote/LAN Ollama host via `LOCAL_AGENT_OLLAMA_BASE_URL` or `--ollama-base-url`; do not assume Ollama is running inside the container.
 
 ## Error codes and troubleshooting
 
