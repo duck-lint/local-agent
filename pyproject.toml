@@ -11,7 +11,6 @@ requires-python = ">=3.11"
 dependencies = ["requests", "PyYAML"]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.4.1,<9"]
 torch-embed = ["torch", "transformers", "sentence-transformers"]
 
 [project.scripts]
