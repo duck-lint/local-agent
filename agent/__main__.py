@@ -55,6 +55,11 @@ from agent.phase3 import (
 from agent.protocol import ToolCall, try_parse_tool_call
 from agent.retrieval import RetrievalResult, retrieve
 from agent.tools import TOOLS, ToolError, configure_tool_security, get_read_text_file_policy
+from agent.ollama_config import (
+    OLLAMA_BASE_URL_ENV,
+    OLLAMA_BASE_URL_FALLBACK_ENV,
+    resolve_ollama_base_url,
+)
 
 
 DEFAULT_CONFIG: Dict[str, Any] = {
@@ -712,6 +717,7 @@ def collect_doctor_checks(
         "retrieval_smoke_ran": False,
         "retrieval_smoke_ok": False,
         "retrieval_smoke_reason": "",
+        "ollama_base_url": _string_config_value(cfg.get("ollama_base_url")),
     }
     phase3_cfg = _build_phase3_cfg(cfg)
     embeddings_db_path = resolve_embeddings_db_path(phase3_cfg, security_root)
@@ -1256,6 +1262,7 @@ def run_doctor(
             ],
             "phase3": phase3_summary,
             "resolved_config_path": _path_to_str(resolved_config_path),
+            "ollama_base_url": _string_config_value(cfg.get("ollama_base_url")),
         }
         payload.update(root_log_fields(runtime_roots))
         print_output(json.dumps(payload, ensure_ascii=False))
@@ -3176,6 +3183,15 @@ def main() -> int:
         default=None,
         help=f"Data root for runs/corpus/scratch (or set {WORKROOT_ENV_VAR}).",
     )
+    parser.add_argument(
+        "--ollama-base-url",
+        type=str,
+        default=None,
+        help=(
+            "Override Ollama host (scheme+host[:port]). "
+            f"Precedence: flag > {OLLAMA_BASE_URL_ENV} > {OLLAMA_BASE_URL_FALLBACK_ENV} > config."
+        ),
+    )
     sub = parser.add_subparsers(dest="cmd", required=True)
 
     p_chat = sub.add_parser("chat", help="Send a single prompt.")
@@ -3321,6 +3337,12 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
+        cfg["ollama_base_url"] = resolve_ollama_base_url(
+            cli_override=getattr(args, "ollama_base_url", None),
+            env=os.environ,
+            config_value=cfg.get("ollama_base_url"),
+            default=DEFAULT_CONFIG.get("ollama_base_url"),
+        )
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,

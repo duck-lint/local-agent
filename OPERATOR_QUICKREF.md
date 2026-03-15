@@ -4,7 +4,7 @@ This is the short runbook. For full architecture and policy detail, see `README.
 
 ## 1) Fast start checklist
 
-1. Ollama is up:
+1. Ollama is up (or reachable remotely). Default `http://127.0.0.1:11434`; override with `--ollama-base-url` or env (`LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config).
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
@@ -58,6 +58,7 @@ python -m agent memory list --json
 python -m agent doctor
 python -m agent doctor --no-ollama
 python -m agent doctor --require-phase3 --json
+python -m agent doctor --ollama-base-url http://lan-host:11434
 local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
 local-agent embed --json
@@ -217,3 +218,4 @@ python -m agent ask "Read dupe.md and summarize it."
 5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
    For offline preflight, use `python -m agent doctor --no-ollama`.
    Under `phase3.embed.provider: torch`, retrieval smoke still runs with `--no-ollama`.
+   For remote Ollama, pass `--ollama-base-url` or set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`.

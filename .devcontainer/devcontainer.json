@@ -1,0 +1,20 @@
+{
+  "name": "local-agent (dev)",
+  "image": "mcr.microsoft.com/devcontainers/python:3.11-bookworm",
+  "remoteUser": "vscode",
+  "mounts": [
+    "type=volume,source=local-agent-workroot,target=/workspaces/local-agent-workroot"
+  ],
+  "remoteEnv": {
+    "LOCAL_AGENT_WORKROOT": "/workspaces/local-agent-workroot"
+  },
+  "postCreateCommand": "python -m pip install --upgrade pip && pip install -e '.[dev]' && python - <<'PY'\\nfrom pathlib import Path\\nroot = Path('/workspaces/local-agent-workroot')\\nfor path in [root, root/'allowed', root/'allowed/corpus', root/'allowed/scratch', root/'runs']:\\n    path.mkdir(parents=True, exist_ok=True)\\nPY",
+  "customizations": {
+    "vscode": {
+      "extensions": ["ms-python.python"],
+      "settings": {
+        "python.defaultInterpreterPath": "/usr/local/bin/python"
+      }
+    }
+  }
+}
