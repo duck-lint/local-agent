@@ -556,7 +556,7 @@ Current defaults in this repo are intentionally conservative:
 - Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > `configs/default.yaml`.
 - Values must include `http://` or `https://` and a host (optionally `:port`); trailing slash is trimmed and invalid values fail fast.
 - Local default: `http://127.0.0.1:11434`.
-- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by doctor, embed, ask/chat, and retrieval smokes.
+- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by Ollama-backed doctor/embed, ask/chat, and retrieval smokes. Offline doctor (`--no-ollama`) and torch-backed embed do not validate unrelated Ollama URL settings at startup.
 - Devcontainer/Codespaces: the container does not run Ollama; point `LOCAL_AGENT_OLLAMA_BASE_URL` at a host you control on the LAN/VPN. Do not expose Ollama to the public internet; keep it firewalled.
 
 ## Optional devcontainer / Codespaces
