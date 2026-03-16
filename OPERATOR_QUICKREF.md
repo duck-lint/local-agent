@@ -42,7 +42,7 @@ python -m pip install -e ".[dev]"
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
-- The shipped allowlisted roots are `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`.
+- The shipped allowlisted roots are `allowed/` and `runs/` (relative to the active `security_root`/`workroot`).
 - Phase 2 source roots stay under `allowed/corpus/` and `allowed/scratch/`.
 ```text
 allowed/
