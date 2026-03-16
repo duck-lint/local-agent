@@ -326,8 +326,8 @@ def collect_doctor_checks(
                 error_code="DOCTOR_ALLOWED_ROOTS_EMPTY",
                 message="No resolved allowed_roots are active in tool policy.",
                 suggested_fix=(
-                    "Ensure configured roots exist (for defaults: ../local-agent-workroot/allowed/ and "
-                    "../local-agent-workroot/runs/), then rerun: python -m agent doctor"
+                    "Ensure configured roots exist (for defaults: allowed/ and runs/ under the active "
+                    "security_root), then rerun: python -m agent doctor"
                 ),
             )
         )
@@ -2658,10 +2658,8 @@ def run_embed(
     ensure_phase3_dirs(security_root)
 
     try:
-        cfg_for_run = dict(cfg)
-        cfg_for_run["ollama_base_url"] = resolve_ollama_base_url(cfg)
         summary = run_embed_phase(
-            cfg=cfg_for_run,
+            cfg=cfg,
             security_root=security_root,
             phase2_db_path=phase2_db_path,
             phase3_cfg=phase3_cfg,
@@ -3395,12 +3393,6 @@ def main() -> int:
     try:
         loaded_cfg, loaded_cfg_path = load_config_with_path()
         cfg = deep_merge_config(DEFAULT_CONFIG, loaded_cfg)
-        cfg["ollama_base_url"] = resolve_ollama_base_url(
-            cli_override=getattr(args, "ollama_base_url", None),
-            env=os.environ,
-            config_value=cfg.get("ollama_base_url"),
-            default=DEFAULT_CONFIG.get("ollama_base_url"),
-        )
         roots = resolve_runtime_roots(
             resolved_config_path=loaded_cfg_path,
             cfg=cfg,
@@ -3429,16 +3421,59 @@ def main() -> int:
         )
         return 1
 
+    def _cfg_with_resolved_ollama_base_url(
+        cfg_in: Dict[str, Any],
+        args_in: argparse.Namespace,
+    ) -> Dict[str, Any]:
+        cfg_for_ollama = dict(cfg_in)
+        resolved_ollama_base_url = resolve_ollama_base_url(
+            cli_override=getattr(args_in, "ollama_base_url", None),
+            env=os.environ,
+            config_value=cfg_in.get("ollama_base_url"),
+            default=DEFAULT_CONFIG.get("ollama_base_url"),
+        )
+        # Store the fully resolved value in the config so that downstream
+        # code (e.g. run_chat / run_ask_grounded) can use it directly,
+        # without needing to re-read environment variables.
+        cfg_for_ollama["ollama_base_url"] = resolved_ollama_base_url
+        cfg_for_ollama["resolved_ollama_base_url"] = resolved_ollama_base_url
+        return cfg_for_ollama
+
+    def _emit_config_error(exc: Exception) -> int:
+        payload: Dict[str, Any] = {
+            "ok": False,
+            "error_code": "CONFIG_ERROR",
+            "error_message": str(exc),
+            "resolved_config_path": _path_to_str(loaded_cfg_path),
+        }
+        payload.update(root_log_fields(roots))
+        print(
+            json.dumps(
+                payload,
+                ensure_ascii=False,
+            ),
+            file=sys.stderr,
+        )
+        return 1
+
     if args.cmd == "chat":
+        try:
+            cfg_for_chat = _cfg_with_resolved_ollama_base_url(cfg, args)
+        except Exception as exc:
+            return _emit_config_error(exc)
         return run_chat(
-            cfg,
+            cfg_for_chat,
             args.prompt,
             resolved_config_path=loaded_cfg_path,
             roots=roots,
         )
     if args.cmd == "ask":
+        try:
+            cfg_for_ask = _cfg_with_resolved_ollama_base_url(cfg, args)
+        except Exception as exc:
+            return _emit_config_error(exc)
         return run_ask_grounded(
-            cfg,
+            cfg_for_ask,
             args.question,
             force_big_second=bool(getattr(args, "big", False)),
             force_fast=bool(getattr(args, "fast", False)),
@@ -3469,8 +3504,20 @@ def main() -> int:
             roots=roots,
         )
     if args.cmd == "embed":
+        phase3_cfg = _build_phase3_cfg(cfg)
+        provider, *_ = parse_embed_runtime(
+            phase3_cfg,
+            model_override=getattr(args, "model", None),
+            batch_size_override=getattr(args, "batch_size", None),
+        )
+        cfg_for_embed = cfg
+        if provider == "ollama":
+            try:
+                cfg_for_embed = _cfg_with_resolved_ollama_base_url(cfg, args)
+            except Exception as exc:
+                return _emit_config_error(exc)
         return run_embed(
-            cfg,
+            cfg_for_embed,
             model_override=getattr(args, "model", None),
             rebuild=bool(getattr(args, "rebuild", False)),
             batch_size_override=getattr(args, "batch_size", None),

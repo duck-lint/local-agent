@@ -346,7 +346,7 @@ Config location (important):
 - Runtime always loads config from the repo file: `local-agent/configs/default.yaml`.
 - Launch directory does not change which config file is selected.
 - Root semantics: `config_root` comes from the loaded config path, `package_root` from installed code location, optional `workroot` comes from `--workroot` / `LOCAL_AGENT_WORKROOT` / config `workroot`, and `security_root` is the path anchor used for tool security and run logs.
-- Effective Ollama endpoint precedence is `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`, then config `ollama_base_url`, then the built-in default `http://127.0.0.1:11434`.
+- Effective Ollama endpoint precedence is `--ollama-base-url`, then `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`, then config `ollama_base_url`, then the built-in default `http://127.0.0.1:11434`.
 
 Optional devcontainer:
 - `.devcontainer/devcontainer.json` is intentionally minimal.
@@ -355,12 +355,14 @@ Optional devcontainer:
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
-- Point `security.allowed_roots` at your sibling workroot data folders (already set in this repo):
-  - `../local-agent-workroot/allowed/corpus/`
+- The shipped config sets `security.allowed_roots` to `allowed/` and `runs/`, which are resolved relative to `security_root` (and typically share the same directory as `workroot`).
+- With the default layout in this repo, set `workroot` (and thus `security_root`) to the sibling data root `../local-agent-workroot/`, so the effective allowed roots become:
+  - `../local-agent-workroot/allowed/`
   - `../local-agent-workroot/runs/`
-  - `../local-agent-workroot/allowed/scratch/`
-- Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
-
+- Phase 2 source roots stay under that external workroot:
+  - `allowed/corpus/`
+  - `allowed/scratch/`
+- Keep `security.roots_must_be_within_security_root: true` and ensure `workroot` points at the desired data root (default in this repo: `../local-agent-workroot/`).
 Ensure allowlisted dirs exist (or keep `auto_create_allowed_roots: true`):
 
 ```text
@@ -517,7 +519,7 @@ Top-level:
 - `full_evidence_triggers`
 - `temperature`
 - `ollama_base_url`
-- environment overrides: `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`
+- runtime overrides: `--ollama-base-url`, then `LOCAL_AGENT_OLLAMA_BASE_URL`, then `OLLAMA_BASE_URL`
 - `phase2` (`index_db_path`, `sources`, `chunking.max_chars`, `chunking.overlap`)
 - `phase3`
   - `embeddings_db_path`
@@ -549,22 +551,23 @@ Security (`security:`):
 
 Current defaults in this repo are intentionally conservative:
 - only `.md`, `.txt`, `.json` reads
-- roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
+- allowlisted roots limited to `allowed/` and `runs/` under the active `security_root` (derived from the configured workroot)
+- phase2 source roots default to `allowed/corpus/` and `allowed/scratch/` under that `security_root`
 - absolute/hidden path denial enabled
 
 ## Ollama host selection (local vs remote)
 
-- Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > `configs/default.yaml`.
+- Precedence: `--ollama-base-url` flag > `LOCAL_AGENT_OLLAMA_BASE_URL` env > `OLLAMA_BASE_URL` env > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
 - Values must include `http://` or `https://` and a host (optionally `:port`); trailing slash is trimmed and invalid values fail fast.
 - Local default: `http://127.0.0.1:11434`.
-- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by doctor, embed, ask/chat, and retrieval smokes.
+- Remote/LAN: set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434` (or use `--ollama-base-url`) and the same resolved host is used by Ollama-backed doctor/embed, ask/chat, and retrieval smokes. Offline doctor (`--no-ollama`) and torch-backed embed do not validate unrelated Ollama URL settings at startup.
 - Devcontainer/Codespaces: the container does not run Ollama; point `LOCAL_AGENT_OLLAMA_BASE_URL` at a host you control on the LAN/VPN. Do not expose Ollama to the public internet; keep it firewalled.
 
 ## Optional devcontainer / Codespaces
 
 - A minimal `.devcontainer/devcontainer.json` is provided for Python 3.11. It mounts a persistent volume at `/workspaces/local-agent-workroot` and exports `LOCAL_AGENT_WORKROOT` there (workroot stays outside the repo).
 - `postCreateCommand` installs the project in editable mode with dev extras (`pip install -e ".[dev]"`) and creates the expected workroot subdirectories.
-- Codespaces/devcontainer sessions should point at a remote/LAN Ollama host via `LOCAL_AGENT_OLLAMA_BASE_URL` or `--ollama-base-url`; do not assume Ollama is running inside the container.
+- Codespaces/devcontainer sessions should point at a remote/LAN Ollama host via `--ollama-base-url`, `LOCAL_AGENT_OLLAMA_BASE_URL`, or `OLLAMA_BASE_URL`; the devcontainer does not configure an Ollama host by default.
 
 ## Error codes and troubleshooting
 

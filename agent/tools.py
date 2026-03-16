@@ -140,7 +140,7 @@ def configure_tool_security(
     if not roots:
         raise ValueError(
             "No valid allowed_roots. Ensure configured directories exist "
-            "(e.g., ../local-agent-workroot/allowed/ and ../local-agent-workroot/runs/) "
+            "(e.g., allowed/ and runs/ under the active security_root/workspace_root) "
             "or update configs/default.yaml."
         )
 

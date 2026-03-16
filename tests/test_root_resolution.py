@@ -5,7 +5,7 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from agent.__main__ import resolve_runtime_roots, root_log_fields
+from agent.__main__ import load_config_with_path, resolve_runtime_roots, root_log_fields
 from agent.runtime_config import resolve_ollama_base_url
 from agent.tools import TOOLS, configure_tool_security
 
@@ -30,6 +30,7 @@ class RootResolutionTests(unittest.TestCase):
         (self.workroot / "allowed" / "corpus").mkdir(parents=True, exist_ok=True)
         (self.workroot / "allowed" / "runs").mkdir(parents=True, exist_ok=True)
         (self.workroot / "allowed" / "scratch").mkdir(parents=True, exist_ok=True)
+        (self.workroot / "runs").mkdir(parents=True, exist_ok=True)
         self.target_file = self.workroot / "allowed" / "corpus" / "a.md"
         self.target_file.write_text("hello from workroot", encoding="utf-8")
 
@@ -118,6 +119,37 @@ class RootResolutionTests(unittest.TestCase):
             package_root=self.repo_root,
         )
         self.assertEqual(roots["workroot"], (self.repo_root / "cli-root").resolve())
+
+    def test_shipped_config_allowed_roots_follow_overridden_workroot(self) -> None:
+        repo_root = Path(__file__).resolve().parent.parent
+        cfg, cfg_path = load_config_with_path(start_dir=repo_root, repo_root=repo_root)
+        self.assertIsNotNone(cfg_path)
+
+        portable_workroot = self.tmp_path / "portable-external-root"
+        (portable_workroot / "allowed" / "corpus").mkdir(parents=True, exist_ok=True)
+        (portable_workroot / "allowed" / "scratch").mkdir(parents=True, exist_ok=True)
+        (portable_workroot / "runs").mkdir(parents=True, exist_ok=True)
+        portable_file = portable_workroot / "allowed" / "corpus" / "portable.md"
+        portable_file.write_text("portable config root", encoding="utf-8")
+
+        roots = resolve_runtime_roots(
+            resolved_config_path=cfg_path,
+            cfg=cfg,
+            cli_workroot=str(portable_workroot),
+            cwd=self.elsewhere,
+            package_root=repo_root,
+        )
+
+        os.chdir(self.elsewhere)
+        configure_tool_security(
+            cfg.get("security", {}),
+            workspace_root=roots["security_root"],
+            resolved_config_path=cfg_path,
+        )
+
+        result = _read_text_file({"path": "allowed/corpus/portable.md"})
+        self.assertEqual(result["path"], str(portable_file.resolve()))
+        self.assertEqual(result["text"], "portable config root")
 
     def test_ollama_base_url_precedence_cli_over_env_and_config(self) -> None:
         resolved = resolve_ollama_base_url(

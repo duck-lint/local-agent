@@ -2,12 +2,14 @@
 
 import io
 import json
+import os
 import tempfile
 import unittest
 from contextlib import redirect_stdout
 from pathlib import Path
+from unittest.mock import patch
 
-from agent.__main__ import run_doctor, run_embed, run_memory
+from agent.__main__ import main, run_doctor, run_embed, run_memory
 from agent.embed_runtime_fingerprint import build_ollama_runtime_fingerprint
 from agent.embeddings_db import connect_db as connect_embeddings_db
 from agent.indexer import SourceSpec, index_sources
@@ -227,6 +229,124 @@ class Phase3CliContractTests(unittest.TestCase):
         self.assertIn("count", list_payload)
         self.assertIn("items", list_payload)
         self.assertGreaterEqual(list_payload["count"], 1)
+
+
+class MainLazyOllamaResolutionTests(unittest.TestCase):
+    INVALID_OLLAMA_URL = "http://example.test:11434/api?token=secret"
+
+    def test_doctor_no_ollama_ignores_invalid_ollama_url_at_startup(self) -> None:
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
+        config_path = Path("/tmp/configs/default.yaml")
+
+        with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
+            with patch("agent.__main__.configure_tool_security"):
+                with patch("agent.__main__.run_doctor", return_value=0) as run_doctor_mock:
+                    with patch.dict(
+                        os.environ,
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
+                        clear=False,
+                    ):
+                        with patch("sys.argv", ["agent", "doctor", "--no-ollama", "--json"]):
+                            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        cfg = run_doctor_mock.call_args.args[0]
+        self.assertEqual(cfg["ollama_base_url"], loaded_cfg["ollama_base_url"])
+        self.assertFalse(run_doctor_mock.call_args.kwargs["check_ollama"])
+
+    def test_embed_torch_ignores_invalid_ollama_url_at_startup(self) -> None:
+        loaded_cfg = {
+            "ollama_base_url": self.INVALID_OLLAMA_URL,
+            "phase3": {"embed": {"provider": "torch", "model_id": "sentence-transformers/all-MiniLM-L6-v2"}},
+        }
+        config_path = Path("/tmp/configs/default.yaml")
+
+        with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
+            with patch("agent.__main__.configure_tool_security"):
+                with patch("agent.__main__.run_embed", return_value=0) as run_embed_mock:
+                    with patch.dict(
+                        os.environ,
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
+                        clear=False,
+                    ):
+                        with patch("sys.argv", ["agent", "embed", "--dry-run", "--json"]):
+                            exit_code = main()
+
+        self.assertEqual(exit_code, 0)
+        cfg = run_embed_mock.call_args.args[0]
+        self.assertEqual(cfg["ollama_base_url"], loaded_cfg["ollama_base_url"])
+
+    def test_embed_ollama_still_fails_fast_on_invalid_ollama_url(self) -> None:
+        loaded_cfg = {
+            "ollama_base_url": self.INVALID_OLLAMA_URL,
+            "phase3": {"embed": {"provider": "ollama", "model_id": "nomic-embed-text-v1.5"}},
+        }
+        config_path = Path("/tmp/configs/default.yaml")
+        stderr = io.StringIO()
+
+        with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
+            with patch("agent.__main__.configure_tool_security"):
+                with patch("agent.__main__.run_embed", return_value=0) as run_embed_mock:
+                    with patch.dict(
+                        os.environ,
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
+                        clear=False,
+                    ):
+                        with patch("sys.argv", ["agent", "embed", "--dry-run", "--json"]):
+                            with patch("sys.stderr", stderr):
+                                exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(run_embed_mock.called)
+        payload = json.loads(stderr.getvalue().strip())
+        self.assertEqual(payload["error_code"], "CONFIG_ERROR")
+        self.assertIn("must not include query", payload["error_message"])
+
+    def test_chat_still_fails_fast_on_invalid_ollama_url(self) -> None:
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
+        config_path = Path("/tmp/configs/default.yaml")
+        stderr = io.StringIO()
+
+        with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
+            with patch("agent.__main__.configure_tool_security"):
+                with patch("agent.__main__.run_chat", return_value=0) as run_chat_mock:
+                    with patch.dict(
+                        os.environ,
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
+                        clear=False,
+                    ):
+                        with patch("sys.argv", ["agent", "chat", "ping"]):
+                            with patch("sys.stderr", stderr):
+                                exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(run_chat_mock.called)
+        payload = json.loads(stderr.getvalue().strip())
+        self.assertEqual(payload["error_code"], "CONFIG_ERROR")
+        self.assertIn("must not include query", payload["error_message"])
+
+    def test_ask_still_fails_fast_on_invalid_ollama_url(self) -> None:
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
+        config_path = Path("/tmp/configs/default.yaml")
+        stderr = io.StringIO()
+
+        with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
+            with patch("agent.__main__.configure_tool_security"):
+                with patch("agent.__main__.run_ask_grounded", return_value=0) as run_ask_mock:
+                    with patch.dict(
+                        os.environ,
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
+                        clear=False,
+                    ):
+                        with patch("sys.argv", ["agent", "ask", "ping"]):
+                            with patch("sys.stderr", stderr):
+                                exit_code = main()
+
+        self.assertEqual(exit_code, 1)
+        self.assertFalse(run_ask_mock.called)
+        payload = json.loads(stderr.getvalue().strip())
+        self.assertEqual(payload["error_code"], "CONFIG_ERROR")
+        self.assertIn("must not include query", payload["error_message"])
 
 
 if __name__ == "__main__":
