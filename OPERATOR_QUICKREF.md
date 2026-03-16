@@ -4,7 +4,7 @@ This is the short runbook. For full architecture and policy detail, see `README.
 
 ## 1) Fast start checklist
 
-1. Ollama is up (or reachable remotely). Default `http://127.0.0.1:11434`; override with `--ollama-base-url` or env (`LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config).
+1. Ollama is up (or reachable remotely). Default `http://127.0.0.1:11434`; precedence is `--ollama-base-url` > `LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default.
 ```bash
 curl http://127.0.0.1:11434/api/tags
 ```
@@ -37,14 +37,17 @@ python -m pip install -e ".[dev]"
 - Launch directory does not change config selection.
 - No config file is required in `local-agent-workroot`.
 - Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
-- Optional Ollama host override: `LOCAL_AGENT_OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
+- Optional Ollama host override precedence: `--ollama-base-url` > `LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
 - Workroot selection stays independent from the Ollama host selection.
 
 4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
+- The shipped allowlisted roots are `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`.
+- Phase 2 source roots stay under `allowed/corpus/` and `allowed/scratch/`.
 ```text
-allowed/corpus/
-allowed/scratch/
+allowed/
+  corpus/
+  scratch/
 runs/
 ```
 
@@ -95,8 +98,9 @@ Keep Ollama and workroot external to the repo checkout. In a remote container, t
 `embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
 
 Optional devcontainer support:
-- `.devcontainer/devcontainer.json` keeps setup minimal and points the container at `http://host.docker.internal:11434` by default.
-- Override `LOCAL_AGENT_OLLAMA_BASE_URL` if your Ollama host differs.
+- `.devcontainer/devcontainer.json` keeps setup minimal, mounts `/workspaces/local-agent-workroot`, and exports `LOCAL_AGENT_WORKROOT`.
+- It does not configure an Ollama host by default.
+- If your environment exposes a reachable Ollama host, set `--ollama-base-url`, `LOCAL_AGENT_OLLAMA_BASE_URL`, or `OLLAMA_BASE_URL` yourself.
 
 Torch-first phase3 flow:
 ```bash
