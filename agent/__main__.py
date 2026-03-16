@@ -3426,12 +3426,17 @@ def main() -> int:
         args_in: argparse.Namespace,
     ) -> Dict[str, Any]:
         cfg_for_ollama = dict(cfg_in)
-        cfg_for_ollama["ollama_base_url"] = resolve_ollama_base_url(
+        resolved_ollama_base_url = resolve_ollama_base_url(
             cli_override=getattr(args_in, "ollama_base_url", None),
             env=os.environ,
             config_value=cfg_in.get("ollama_base_url"),
             default=DEFAULT_CONFIG.get("ollama_base_url"),
         )
+        # Store the fully resolved value in the config so that downstream
+        # code (e.g. run_chat / run_ask_grounded) can use it directly,
+        # without needing to re-read environment variables.
+        cfg_for_ollama["ollama_base_url"] = resolved_ollama_base_url
+        cfg_for_ollama["resolved_ollama_base_url"] = resolved_ollama_base_url
         return cfg_for_ollama
 
     def _emit_config_error(exc: Exception) -> int:
