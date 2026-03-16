@@ -355,10 +355,9 @@ Optional devcontainer:
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
-- Point `security.allowed_roots` at your sibling workroot data folders (already set in this repo):
-  - `../local-agent-workroot/allowed/corpus/`
-  - `../local-agent-workroot/runs/`
-  - `../local-agent-workroot/allowed/scratch/`
+- Point `security.allowed_roots` at paths inside the active workroot (already set in this repo as workroot-relative paths):
+  - `allowed/`
+  - `runs/`
 - Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
 
 Ensure allowlisted dirs exist (or keep `auto_create_allowed_roots: true`):
@@ -549,7 +548,7 @@ Security (`security:`):
 
 Current defaults in this repo are intentionally conservative:
 - only `.md`, `.txt`, `.json` reads
-- roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
+- roots limited to configured `allowed/` and `runs/` under the active workroot
 - absolute/hidden path denial enabled
 
 ## Ollama host selection (local vs remote)
