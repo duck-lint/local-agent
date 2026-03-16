@@ -3499,16 +3499,18 @@ def main() -> int:
             roots=roots,
         )
     if args.cmd == "embed":
-        try:
-            phase3_cfg = _build_phase3_cfg(cfg)
-            provider, *_ = parse_embed_runtime(
-                phase3_cfg,
-                model_override=getattr(args, "model", None),
-                batch_size_override=getattr(args, "batch_size", None),
-            )
-            cfg_for_embed = _cfg_with_resolved_ollama_base_url(cfg, args) if provider == "ollama" else cfg
-        except Exception as exc:
-            return _emit_config_error(exc)
+        phase3_cfg = _build_phase3_cfg(cfg)
+        provider, *_ = parse_embed_runtime(
+            phase3_cfg,
+            model_override=getattr(args, "model", None),
+            batch_size_override=getattr(args, "batch_size", None),
+        )
+        cfg_for_embed = cfg
+        if provider == "ollama":
+            try:
+                cfg_for_embed = _cfg_with_resolved_ollama_base_url(cfg, args)
+            except Exception as exc:
+                return _emit_config_error(exc)
         return run_embed(
             cfg_for_embed,
             model_override=getattr(args, "model", None),
