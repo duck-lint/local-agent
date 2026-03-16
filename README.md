@@ -551,8 +551,8 @@ Security (`security:`):
 
 Current defaults in this repo are intentionally conservative:
 - only `.md`, `.txt`, `.json` reads
-- allowlisted roots limited to configured `../local-agent-workroot/allowed/` and `../local-agent-workroot/runs/`
-- phase2 source roots default to `allowed/corpus/` and `allowed/scratch/` under that workroot
+- allowlisted roots limited to `allowed/` and `runs/` under the active `security_root` (derived from the configured workroot)
+- phase2 source roots default to `allowed/corpus/` and `allowed/scratch/` under that `security_root`
 - absolute/hidden path denial enabled
 
 ## Ollama host selection (local vs remote)
