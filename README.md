@@ -355,14 +355,14 @@ Optional devcontainer:
 
 Split repo/workroot setup (no workroot config required):
 - Keep your single live config in repo: `local-agent/configs/default.yaml`.
-- The shipped config already points `security.allowed_roots` at these sibling workroot roots:
+- The shipped config sets `security.allowed_roots` to `allowed/` and `runs/`, which are resolved relative to `security_root` (and typically share the same directory as `workroot`).
+- With the default layout in this repo, set `workroot` (and thus `security_root`) to the sibling data root `../local-agent-workroot/`, so the effective allowed roots become:
   - `../local-agent-workroot/allowed/`
   - `../local-agent-workroot/runs/`
 - Phase 2 source roots stay under that external workroot:
   - `allowed/corpus/`
   - `allowed/scratch/`
-- Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default in this repo: `../local-agent-workroot/`).
-
+- Keep `security.roots_must_be_within_security_root: true` and ensure `workroot` points at the desired data root (default in this repo: `../local-agent-workroot/`).
 Ensure allowlisted dirs exist (or keep `auto_create_allowed_roots: true`):
 
 ```text
