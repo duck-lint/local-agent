@@ -232,8 +232,10 @@ class Phase3CliContractTests(unittest.TestCase):
 
 
 class MainLazyOllamaResolutionTests(unittest.TestCase):
+    INVALID_OLLAMA_URL = "http://example.test:11434/api?token=secret"
+
     def test_doctor_no_ollama_ignores_invalid_ollama_url_at_startup(self) -> None:
-        loaded_cfg = {"ollama_base_url": "http://example.test:11434/api?token=secret"}
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
         config_path = Path("/tmp/configs/default.yaml")
 
         with patch("agent.__main__.load_config_with_path", return_value=(loaded_cfg, config_path)):
@@ -241,7 +243,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
                 with patch("agent.__main__.run_doctor", return_value=0) as run_doctor_mock:
                     with patch.dict(
                         os.environ,
-                        {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://example.test:11434/api?token=secret"},
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
                         clear=False,
                     ):
                         with patch("sys.argv", ["agent", "doctor", "--no-ollama", "--json"]):
@@ -254,7 +256,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
 
     def test_embed_torch_ignores_invalid_ollama_url_at_startup(self) -> None:
         loaded_cfg = {
-            "ollama_base_url": "http://example.test:11434/api?token=secret",
+            "ollama_base_url": self.INVALID_OLLAMA_URL,
             "phase3": {"embed": {"provider": "torch", "model_id": "sentence-transformers/all-MiniLM-L6-v2"}},
         }
         config_path = Path("/tmp/configs/default.yaml")
@@ -264,7 +266,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
                 with patch("agent.__main__.run_embed", return_value=0) as run_embed_mock:
                     with patch.dict(
                         os.environ,
-                        {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://example.test:11434/api?token=secret"},
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
                         clear=False,
                     ):
                         with patch("sys.argv", ["agent", "embed", "--dry-run", "--json"]):
@@ -276,7 +278,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
 
     def test_embed_ollama_still_fails_fast_on_invalid_ollama_url(self) -> None:
         loaded_cfg = {
-            "ollama_base_url": "http://example.test:11434/api?token=secret",
+            "ollama_base_url": self.INVALID_OLLAMA_URL,
             "phase3": {"embed": {"provider": "ollama", "model_id": "nomic-embed-text-v1.5"}},
         }
         config_path = Path("/tmp/configs/default.yaml")
@@ -287,7 +289,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
                 with patch("agent.__main__.run_embed", return_value=0) as run_embed_mock:
                     with patch.dict(
                         os.environ,
-                        {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://example.test:11434/api?token=secret"},
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
                         clear=False,
                     ):
                         with patch("sys.argv", ["agent", "embed", "--dry-run", "--json"]):
@@ -301,7 +303,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
         self.assertIn("must not include query", payload["error_message"])
 
     def test_chat_still_fails_fast_on_invalid_ollama_url(self) -> None:
-        loaded_cfg = {"ollama_base_url": "http://example.test:11434/api?token=secret"}
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
         config_path = Path("/tmp/configs/default.yaml")
         stderr = io.StringIO()
 
@@ -310,7 +312,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
                 with patch("agent.__main__.run_chat", return_value=0) as run_chat_mock:
                     with patch.dict(
                         os.environ,
-                        {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://example.test:11434/api?token=secret"},
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
                         clear=False,
                     ):
                         with patch("sys.argv", ["agent", "chat", "ping"]):
@@ -324,7 +326,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
         self.assertIn("must not include query", payload["error_message"])
 
     def test_ask_still_fails_fast_on_invalid_ollama_url(self) -> None:
-        loaded_cfg = {"ollama_base_url": "http://example.test:11434/api?token=secret"}
+        loaded_cfg = {"ollama_base_url": self.INVALID_OLLAMA_URL}
         config_path = Path("/tmp/configs/default.yaml")
         stderr = io.StringIO()
 
@@ -333,7 +335,7 @@ class MainLazyOllamaResolutionTests(unittest.TestCase):
                 with patch("agent.__main__.run_ask_grounded", return_value=0) as run_ask_mock:
                     with patch.dict(
                         os.environ,
-                        {"LOCAL_AGENT_OLLAMA_BASE_URL": "http://example.test:11434/api?token=secret"},
+                        {"LOCAL_AGENT_OLLAMA_BASE_URL": self.INVALID_OLLAMA_URL},
                         clear=False,
                     ):
                         with patch("sys.argv", ["agent", "ask", "ping"]):

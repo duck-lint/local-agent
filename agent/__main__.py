@@ -3421,12 +3421,15 @@ def main() -> int:
         )
         return 1
 
-    def _cfg_with_resolved_ollama_base_url() -> Dict[str, Any]:
-        cfg_for_ollama = dict(cfg)
+    def _cfg_with_resolved_ollama_base_url(
+        cfg_in: Dict[str, Any],
+        args_in: argparse.Namespace,
+    ) -> Dict[str, Any]:
+        cfg_for_ollama = dict(cfg_in)
         cfg_for_ollama["ollama_base_url"] = resolve_ollama_base_url(
-            cli_override=getattr(args, "ollama_base_url", None),
+            cli_override=getattr(args_in, "ollama_base_url", None),
             env=os.environ,
-            config_value=cfg.get("ollama_base_url"),
+            config_value=cfg_in.get("ollama_base_url"),
             default=DEFAULT_CONFIG.get("ollama_base_url"),
         )
         return cfg_for_ollama
@@ -3450,7 +3453,7 @@ def main() -> int:
 
     if args.cmd == "chat":
         try:
-            cfg_for_chat = _cfg_with_resolved_ollama_base_url()
+            cfg_for_chat = _cfg_with_resolved_ollama_base_url(cfg, args)
         except Exception as exc:
             return _emit_config_error(exc)
         return run_chat(
@@ -3461,7 +3464,7 @@ def main() -> int:
         )
     if args.cmd == "ask":
         try:
-            cfg_for_ask = _cfg_with_resolved_ollama_base_url()
+            cfg_for_ask = _cfg_with_resolved_ollama_base_url(cfg, args)
         except Exception as exc:
             return _emit_config_error(exc)
         return run_ask_grounded(
@@ -3498,12 +3501,12 @@ def main() -> int:
     if args.cmd == "embed":
         try:
             phase3_cfg = _build_phase3_cfg(cfg)
-            provider, _, _, _, _, _ = parse_embed_runtime(
+            provider, *_ = parse_embed_runtime(
                 phase3_cfg,
                 model_override=getattr(args, "model", None),
                 batch_size_override=getattr(args, "batch_size", None),
             )
-            cfg_for_embed = _cfg_with_resolved_ollama_base_url() if provider == "ollama" else cfg
+            cfg_for_embed = _cfg_with_resolved_ollama_base_url(cfg, args) if provider == "ollama" else cfg
         except Exception as exc:
             return _emit_config_error(exc)
         return run_embed(
