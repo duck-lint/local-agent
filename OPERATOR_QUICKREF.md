@@ -46,6 +46,8 @@ python -m pip install -e ".[dev]"
 - Phase 2 source roots stay under `allowed/corpus/` and `allowed/scratch/`.
 ```text
 allowed/
+  corpus/
+  scratch/
 runs/
 ```
 
