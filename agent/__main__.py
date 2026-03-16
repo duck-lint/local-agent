@@ -327,7 +327,7 @@ def collect_doctor_checks(
                 message="No resolved allowed_roots are active in tool policy.",
                 suggested_fix=(
                     "Ensure configured roots exist (for defaults: allowed/ and runs/ under the active "
-                    "workroot), then rerun: python -m agent doctor"
+                    "security_root), then rerun: python -m agent doctor"
                 ),
             )
         )
