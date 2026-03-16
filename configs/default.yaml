@@ -23,8 +23,8 @@ timeout_s_big_second: 600
 max_chars_full_read: 200000
 security:
   allowed_roots:
-    - "../local-agent-workroot/runs/"
-    - "../local-agent-workroot/allowed/"
+    - "runs/"
+    - "allowed/"
   allowed_exts:
     - ".md"
     - ".txt"

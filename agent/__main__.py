@@ -326,8 +326,8 @@ def collect_doctor_checks(
                 error_code="DOCTOR_ALLOWED_ROOTS_EMPTY",
                 message="No resolved allowed_roots are active in tool policy.",
                 suggested_fix=(
-                    "Ensure configured roots exist (for defaults: ../local-agent-workroot/allowed/ and "
-                    "../local-agent-workroot/runs/), then rerun: python -m agent doctor"
+                    "Ensure configured roots exist (for defaults: allowed/ and runs/ under the active "
+                    "security_root), then rerun: python -m agent doctor"
                 ),
             )
         )
