@@ -1,0 +1,563 @@
+{
+  "repository_summary": {
+    "name": "local-agent",
+    "owner": "duck-lint",
+    "description": "A security-focused CLI wrapper around Ollama for evidence-gated question answering over local documents. Implements a two-pass LLM orchestration model (tool-selection then answer-only), sandboxed file access with typed error codes, markdown indexing with heading-aware chunking, hybrid lexical+vector retrieval, durable memory, citation validation, and full run-level audit logging. Intentionally narrow: one tool (read_text_file), one job (evidence-constrained QA), fail-closed behavior on missing evidence.",
+    "language": "Python",
+    "python_version": ">=3.11",
+    "lines_of_code_approx": 7700,
+    "test_count_approx": 164,
+    "test_framework": "unittest",
+    "external_integrations": [
+      "Ollama (HTTP API for generation and embedding)",
+      "sentence-transformers / HuggingFace (local embedding)",
+      "SQLite (three databases: index, embeddings, memory)",
+      "Local filesystem (sandboxed read access)"
+    ]
+  },
+  "atomic_skills": [
+    {
+      "id": "S01",
+      "skill": "Designing multi-subcommand CLI entry points with argparse",
+      "evidence": "agent/__main__.py defines 7 subcommands (chat, ask, index, query, embed, memory, doctor) with global flags (--workroot, --ollama-base-url) and per-command options (--big, --fast, --full, --rebuild, --json, etc.).",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S02",
+      "skill": "Implementing typed error codes for deterministic failure signaling",
+      "evidence": "13+ distinct error codes (PATH_DENIED, FILE_NOT_FOUND, AMBIGUOUS_PATH, EVIDENCE_NOT_ACQUIRED, EVIDENCE_TRUNCATED, SECOND_PASS_FORMAT_VIOLATION, INVALID_ARGS, FILE_READ_ERROR, FILE_EMPTY, TOOL_ERROR, EVIDENCE_INVALID, UNEXPECTED_TOOL_CALL_SECOND_PASS, INTERNAL_ERROR, CONFIG_ERROR, DOCTOR_*) used throughout agent/__main__.py and agent/tools.py. Each code maps to a specific failure scenario with structured error messages in run JSON logs.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "agent/tools.py", "OPERATOR_QUICKREF.md"],
+      "transferable": true
+    },
+    {
+      "id": "S03",
+      "skill": "Implementing configuration precedence chains across multiple override levels",
+      "evidence": "Ollama base URL: CLI --ollama-base-url > LOCAL_AGENT_OLLAMA_BASE_URL env > OLLAMA_BASE_URL env > config value > default. Workroot: CLI flag > LOCAL_AGENT_WORKROOT env > config workroot > config_root or cwd. Implemented in agent/ollama_config.py and agent/runtime_config.py with tests in tests/test_ollama_config.py and tests/test_root_resolution.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/ollama_config.py", "agent/runtime_config.py", "tests/test_ollama_config.py", "tests/test_root_resolution.py"],
+      "transferable": true
+    },
+    {
+      "id": "S04",
+      "skill": "Structuring a Python package as an executable module with entry point",
+      "evidence": "agent/__main__.py provides main() entry point. pyproject.toml registers 'local-agent = agent.__main__:main' console script. Package installable via pip install -e '.[dev]'.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "agent/__init__.py", "pyproject.toml"],
+      "transferable": true
+    },
+    {
+      "id": "S05",
+      "skill": "Implementing filesystem path containment checks with lexical and resolved validation",
+      "evidence": "agent/tools.py resolve_and_validate_path() performs two-layer validation: lexical containment via _is_within() before file existence check, then re-checks containment after Path.resolve(strict=True) to catch symlink escapes. Tests in tests/test_tools_security.py validate traversal denial, escape detection, and ambiguity.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/tools.py", "tests/test_tools_security.py"],
+      "transferable": true
+    },
+    {
+      "id": "S06",
+      "skill": "Defending against symlink escape attacks in file-read operations",
+      "evidence": "agent/tools.py resolve_and_validate_path() calls Path.resolve(strict=True) after initial lexical check, then re-validates _is_within() on the resolved path. If resolved path escapes the allowed root, sets escape_seen=True and returns PATH_DENIED. Tested in tests/test_tools_security.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/tools.py", "tests/test_tools_security.py"],
+      "transferable": true
+    },
+    {
+      "id": "S07",
+      "skill": "Implementing deny-by-default security policies for file access (hidden paths, absolute paths, extension filtering)",
+      "evidence": "ReadTextFilePolicy dataclass in agent/tools.py enforces deny_absolute_paths, deny_hidden_paths, and allowed_exts={.md,.txt,.json} by default. Each denial produces a typed error. configs/default.yaml declares security.deny_absolute_paths: true, deny_hidden_paths: true, allow_any_path: false. Tests in tests/test_tools_security.py and tests/test_evidence_read_policy.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/tools.py", "configs/default.yaml", "tests/test_tools_security.py", "tests/test_evidence_read_policy.py"],
+      "transferable": true
+    },
+    {
+      "id": "S08",
+      "skill": "Implementing bare-filename search with multi-root traversal and ambiguity detection",
+      "evidence": "agent/tools.py resolve_and_validate_path() bare-filename mode iterates all allowed_roots, collects valid matches, deduplicates by resolved path, and returns AMBIGUOUS_PATH if multiple unique matches exist. Tests verify single-match resolution, zero-match FILE_NOT_FOUND, and multi-match ambiguity.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/tools.py", "tests/test_tools_security.py"],
+      "transferable": true
+    },
+    {
+      "id": "S09",
+      "skill": "Implementing two-pass LLM orchestration (tool-selection pass then answer-only pass)",
+      "evidence": "agent/__main__.py run_ask_one_tool() implements Pass 1 (model chooses to call read_text_file or answer directly) and Pass 2 (answer-only, no tool calls allowed). Pass 2 uses different system prompt, validates no tool-call JSON in response, and enforces format constraints. Full flow logged to run JSON.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S10",
+      "skill": "Parsing structured JSON tool calls from unstructured LLM output with strict-then-fallback strategy",
+      "evidence": "agent/protocol.py try_parse_tool_call() first attempts json.loads() on full text (strict mode); on failure, falls back to _find_first_json_object_span() which scans for brace-balanced JSON objects while tracking string/escape state. Captures trailing text after the JSON object. Tests in tests/test_protocol_tool_call_parsing.py cover strict parse, prefix extraction, trailing text, and malformed input.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/protocol.py", "tests/test_protocol_tool_call_parsing.py"],
+      "transferable": true
+    },
+    {
+      "id": "S11",
+      "skill": "Implementing evidence-gated answer generation with fail-closed behavior",
+      "evidence": "agent/__main__.py evidence_required_by_question() uses regex-based heuristics to detect when evidence is required. If evidence is required but not acquired (no tool call, tool error, invalid result), the system fails with EVIDENCE_NOT_ACQUIRED rather than guessing. Tests in tests/test_phase3_ask_grounded.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "tests/test_phase3_ask_grounded.py"],
+      "transferable": true
+    },
+    {
+      "id": "S12",
+      "skill": "Detecting and retrying LLM output format violations with escalating strictness",
+      "evidence": "agent/__main__.py second_pass_violations() detects markdown tables via pipe-and-separator regex. If only MISSING_SCOPE_FOOTER, auto-appends footer. If other violations, retries with strict_rewrite_tables=True system prompt. If retry still fails, errors with SECOND_PASS_FORMAT_VIOLATION. Full retry metadata logged in run JSON.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S13",
+      "skill": "Integrating with Ollama HTTP API for text generation and embedding",
+      "evidence": "agent/__main__.py calls Ollama /api/generate for chat/ask passes. agent/embedders/ollama.py calls /api/embeddings for vector embedding. Both handle HTTP errors, timeouts, and endpoint validation. agent/ollama_config.py normalizes and validates base URLs (scheme, host, no-path enforcement).",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "agent/embedders/ollama.py", "agent/ollama_config.py"],
+      "transferable": true
+    },
+    {
+      "id": "S14",
+      "skill": "Implementing content-based model routing with keyword triggers",
+      "evidence": "agent/__main__.py select_models() routes between model_fast and model_big based on big_triggers keyword list (deep, long, essay, synthesize, thorough, etc.) matched against the question text. Supports force overrides (--fast, --big, --full) and prefer_fast configuration.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "configs/default.yaml"],
+      "transferable": true
+    },
+    {
+      "id": "S15",
+      "skill": "Implementing auto-reread logic for truncated file evidence",
+      "evidence": "agent/__main__.py run_ask_one_tool() detects truncated evidence after Pass 1, computes reread target via compute_reread_max_chars() (capped at READ_TEXT_FILE_HARD_CAP=200000), and issues a second read_text_file call. classify_truncated_evidence_issue() categorizes remaining truncation.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S16",
+      "skill": "Implementing heading-aware markdown chunking with hierarchical heading paths",
+      "evidence": "agent/chunking.py chunk_markdown_obsidian_v1() tracks heading hierarchy (H1 > H2 > H3 etc.) across chunks, splits on heading boundaries, and records heading_path (e.g., 'H1: Title > H2: Section') for each chunk. Tests in tests/test_phase2_chunking.py verify heading tracking, boundary splitting, and overlap behavior.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/chunking.py", "tests/test_phase2_chunking.py"],
+      "transferable": true
+    },
+    {
+      "id": "S17",
+      "skill": "Implementing fixed-window text chunking with configurable overlap",
+      "evidence": "agent/chunking.py chunk_markdown_fixed_window_v1() splits text into chunks of max_chars with overlap characters carried from the previous chunk boundary. Uses sentenceish boundary detection to avoid mid-word splits. BOM stripping included.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/chunking.py", "tests/test_phase2_chunking.py"],
+      "transferable": true
+    },
+    {
+      "id": "S18",
+      "skill": "Building a SQLite-backed document index with positional text search",
+      "evidence": "agent/index_db.py implements multi-table schema (sources, docs, chunks) with query_chunks_lexical() using instr(lower(text), lower(query)) for position-based matching, sorted by match position and chunk size. Tests in tests/test_phase2_query.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/index_db.py", "agent/indexer.py", "tests/test_phase2_query.py", "tests/test_phase2_indexing.py"],
+      "transferable": true
+    },
+    {
+      "id": "S19",
+      "skill": "Parsing YAML frontmatter from markdown documents",
+      "evidence": "agent/chunking.py split_frontmatter() detects and extracts YAML frontmatter delimited by --- markers. agent/indexer.py FrontmatterParseResult captures parsed YAML fields. Frontmatter is stripped before chunking.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/chunking.py", "agent/indexer.py"],
+      "transferable": true
+    },
+    {
+      "id": "S20",
+      "skill": "Designing SQLite schema migrations with version tracking",
+      "evidence": "agent/index_db.py init_db() checks PRAGMA user_version, applies migrations v1→v2 (adds scheme, heading_path, chunk_key columns) and v2→v3 (creates meta table, backfills chunk_keys via SHA-256 hashing), commits after each migration. Tested in tests/test_phase2_indexing.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/index_db.py", "tests/test_phase2_indexing.py"],
+      "transferable": true
+    },
+    {
+      "id": "S21",
+      "skill": "Implementing incremental document upsert with content fingerprinting",
+      "evidence": "agent/indexer.py index_sources() computes SHA-256 for each document, skips re-indexing if fingerprint unchanged, and tracks IndexSummary (docs added, updated, unchanged, chunks replaced). Chunk keys are derived from content hashes for stable identity.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/indexer.py", "agent/index_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S22",
+      "skill": "Implementing local sentence-transformer embedding with CUDA/CPU device selection",
+      "evidence": "agent/embedders/torch_embedder.py TorchEmbedder supports device='auto'/'cpu'/'cuda', dtype selection (float16/float32), batch processing, pooling='mean', normalize=True, offline_only mode, and local_model_path override. Tests in tests/test_torch_embedder.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embedders/torch_embedder.py", "tests/test_torch_embedder.py"],
+      "transferable": true
+    },
+    {
+      "id": "S23",
+      "skill": "Storing and retrieving vector embeddings as f32 little-endian blobs in SQLite",
+      "evidence": "agent/embedding_fingerprint.py pack_vector_f32_le() converts float arrays to little-endian binary blobs. agent/embeddings_db.py stores blobs in embeddings table, retrieves and unpacks via struct for cosine similarity computation. Tests in tests/test_embeddings_db.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embedding_fingerprint.py", "agent/embeddings_db.py", "tests/test_embeddings_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S24",
+      "skill": "Implementing hybrid lexical + vector retrieval with rank-based fusion",
+      "evidence": "agent/retrieval.py retrieve() runs lexical search (Borda-like scoring: 1.0 - (rank-1)/count) and vector search (cosine similarity scaled to [0,1]) independently, then fuses via simple_union: average score if in both, single score if in one, sorted by method (both first) then score descending. Tests in tests/test_phase3_retrieval.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/retrieval.py", "tests/test_phase3_retrieval.py"],
+      "transferable": true
+    },
+    {
+      "id": "S25",
+      "skill": "Implementing cosine similarity with heap-based top-k candidate selection",
+      "evidence": "agent/retrieval.py _compute_vector_candidates() computes cosine similarity (dot product / norms, or just dot product for normalized vectors), maintains a heapq min-heap of size fetch_k to efficiently select top candidates without sorting all vectors.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/retrieval.py"],
+      "transferable": true
+    },
+    {
+      "id": "S26",
+      "skill": "Implementing orphan embedding pruning",
+      "evidence": "agent/embeddings_db.py delete_orphan_embeddings() removes embeddings whose chunk_keys no longer exist in the index. agent/phase3.py run_embed_phase() orchestrates pruning after embed updates. Tests in tests/test_embeddings_db.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embeddings_db.py", "agent/phase3.py", "tests/test_embeddings_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S27",
+      "skill": "Computing runtime fingerprints to detect model and configuration drift",
+      "evidence": "agent/embed_runtime_fingerprint.py build_torch_runtime_fingerprint() and build_ollama_runtime_fingerprint() hash model files and config parameters. agent/phase3.py compares stored fingerprint vs current to detect stale embeddings requiring rebuild. Tests in tests/test_embed_runtime_fingerprint.py and tests/test_phase3_fingerprint.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embed_runtime_fingerprint.py", "agent/phase3.py", "tests/test_embed_runtime_fingerprint.py", "tests/test_phase3_fingerprint.py"],
+      "transferable": true
+    },
+    {
+      "id": "S28",
+      "skill": "Parsing structured citation markers from LLM output via regex",
+      "evidence": "agent/citation_audit.py parse_citations() extracts [source:rel_path|chunk_key] markers from model-generated text using compiled regex patterns. ParsedCitation dataclass captures path, chunk_key, and raw text. Tests in tests/test_citation_audit.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/citation_audit.py", "tests/test_citation_audit.py"],
+      "transferable": true
+    },
+    {
+      "id": "S29",
+      "skill": "Validating LLM citations against evidence snapshots with heading normalization and prefix matching",
+      "evidence": "agent/citation_audit.py validate_citations() checks citations against top_n evidence chunks. Supports three matching modes: exact (full heading path match), prefix (cited heading is prefix of actual heading), and ignore (report mismatch without invalidating). _normalize_heading_segment() collapses whitespace, strips trailing punctuation, and handles colon-separated heading prefixes.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/citation_audit.py", "tests/test_citation_audit.py"],
+      "transferable": true
+    },
+    {
+      "id": "S30",
+      "skill": "Generating evidence scope footers for provenance tracking in LLM output",
+      "evidence": "agent/citation_audit.py format_citation_validation_footer() and agent/__main__.py ensure_canonical_scope_footer_tail() produce scope footers like 'Scope: full evidence from read_text_file (chars_returned/chars_full), sha256=...' appended to every answer. Tests in tests/test_scope_footer.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/citation_audit.py", "agent/__main__.py", "tests/test_scope_footer.py"],
+      "transferable": true
+    },
+    {
+      "id": "S31",
+      "skill": "Logging full run metadata to structured JSON for post-hoc audit",
+      "evidence": "agent/__main__.py run_ask_one_tool() writes runs/<run_id>/run.json containing mode, question, model selection, raw model responses (with thinking stripped), tool trace, evidence status/metadata, retry info, error codes, timings, and resolved paths. OPERATOR_QUICKREF.md documents inspection workflow.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "OPERATOR_QUICKREF.md"],
+      "transferable": true
+    },
+    {
+      "id": "S32",
+      "skill": "Implementing typed durable memory records with constrained vocabularies",
+      "evidence": "agent/memory_db.py defines ALLOWED_MEMORY_TYPES={preference, project_state, constraint, workflow_rule, user_fact} and ALLOWED_MEMORY_SOURCES={manual, derived_from_evidence}. add_memory() validates type and source before insert. Schema includes memory and memory_evidence tables with foreign key cascade. Tests in test files.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/memory_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S33",
+      "skill": "Linking memory records to evidence chunks with referential integrity",
+      "evidence": "agent/memory_db.py add_memory() inserts into memory_evidence table linking memory_id to chunk_keys. If source='derived_from_evidence', at least one chunk_key is required. Foreign key ON DELETE CASCADE enforces cleanup.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/memory_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S34",
+      "skill": "Normalizing and validating URLs with scheme enforcement and structural constraints",
+      "evidence": "agent/ollama_config.py normalize_ollama_base_url() enforces http/https scheme, rejects credentials, rejects non-empty path/params/query/fragment, strips trailing slash. Tests in tests/test_ollama_config.py cover valid inputs, path rejection, missing scheme, etc.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/ollama_config.py", "tests/test_ollama_config.py"],
+      "transferable": true
+    },
+    {
+      "id": "S35",
+      "skill": "Implementing YAML-backed runtime configuration with nested section access",
+      "evidence": "configs/default.yaml defines model routing, security policy, phase2 indexing, and phase3 embedding/retrieval/memory settings in nested YAML. Configuration loaded at startup via PyYAML, with dotted-path access for nested keys throughout agent modules.",
+      "evidence_strength": "strong",
+      "evidence_files": ["configs/default.yaml", "agent/__main__.py", "agent/runtime_config.py"],
+      "transferable": true
+    },
+    {
+      "id": "S36",
+      "skill": "Resolving workroot and database paths relative to configuration root",
+      "evidence": "agent/runtime_config.py resolves workspace_root and security_root from config. agent/tools.py configure_tool_security() resolves allowed_roots relative to workspace_root/security_root. Phase 2/3 database paths resolved relative to workroot. Tests in tests/test_root_resolution.py and tests/test_config_workspace_resolution.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/runtime_config.py", "agent/tools.py", "tests/test_root_resolution.py", "tests/test_config_workspace_resolution.py"],
+      "transferable": true
+    },
+    {
+      "id": "S37",
+      "skill": "Designing an abstract embedder interface with pluggable provider implementations",
+      "evidence": "agent/embedder.py defines abstract Embedder base class with embed_texts(), embed_dim, and runtime_fingerprint() contract. agent/embedders/torch_embedder.py and agent/embedders/ollama.py implement the interface. agent/phase3.py create_embedder() selects provider via configuration.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embedder.py", "agent/embedders/torch_embedder.py", "agent/embedders/ollama.py", "agent/phase3.py"],
+      "transferable": true
+    },
+    {
+      "id": "S38",
+      "skill": "Implementing preflight health checks (doctor command) with structured diagnostics",
+      "evidence": "agent/__main__.py cmd_doctor() runs checks for Ollama reachability, config validity, source directory existence, index schema version, embedding staleness, and memory-evidence dangling references. DoctorCheckResult dataclass captures check name, status, and message. Supports --json output. Tests in tests/test_doctor.py and tests/test_phase3_embed_doctor.py.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py", "tests/test_doctor.py", "tests/test_phase3_embed_doctor.py"],
+      "transferable": true
+    },
+    {
+      "id": "S39",
+      "skill": "Writing unittest-based tests for security boundary conditions",
+      "evidence": "tests/test_tools_security.py tests path traversal denial, hidden path denial, symlink escape detection, absolute path denial, extension filtering, bare-filename ambiguity, and allow_any_path override. tests/test_evidence_read_policy.py tests policy enforcement combinations.",
+      "evidence_strength": "strong",
+      "evidence_files": ["tests/test_tools_security.py", "tests/test_evidence_read_policy.py"],
+      "transferable": true
+    },
+    {
+      "id": "S40",
+      "skill": "Writing contract-stability tests for CLI command dispatch",
+      "evidence": "tests/test_phase3_cli_contract.py tests command dispatch for all subcommands, argument parsing, lazy Ollama resolution, and flag behavior by patching agent.__main__.main().",
+      "evidence_strength": "strong",
+      "evidence_files": ["tests/test_phase3_cli_contract.py"],
+      "transferable": true
+    },
+    {
+      "id": "S41",
+      "skill": "Configuring pyproject.toml with optional dependency groups and console script entry points",
+      "evidence": "pyproject.toml defines [project.optional-dependencies] torch-embed (torch, transformers, sentence-transformers) and dev (pytest>=7). Registers console script local-agent = agent.__main__:main.",
+      "evidence_strength": "strong",
+      "evidence_files": ["pyproject.toml"],
+      "transferable": true
+    },
+    {
+      "id": "S42",
+      "skill": "Implementing curated release zip creation with inclusion/exclusion rules",
+      "evidence": "scripts/make_release_zip.py _collect_release_files() curates included files (agent/, configs/, specific root files), excludes build artifacts (.git, .venv, __pycache__, dist/, build/, runs/), supports --include-workroot for optional payload and --dry-run for preview.",
+      "evidence_strength": "strong",
+      "evidence_files": ["scripts/make_release_zip.py"],
+      "transferable": true
+    },
+    {
+      "id": "S43",
+      "skill": "Implementing build artifact cleanup automation",
+      "evidence": "scripts/clean_artifacts.py recursively removes __pycache__, .pytest_cache, .pyc files, dist/, build/ with --dry-run preview mode.",
+      "evidence_strength": "strong",
+      "evidence_files": ["scripts/clean_artifacts.py"],
+      "transferable": true
+    },
+    {
+      "id": "S44",
+      "skill": "Configuring devcontainer with named volume mounts for persistent external storage",
+      "evidence": ".devcontainer/devcontainer.json mounts named volume 'local-agent-workroot' at /workspaces/local-agent-workroot, sets LOCAL_AGENT_WORKROOT env var, and runs post-create setup (pip install, directory creation).",
+      "evidence_strength": "strong",
+      "evidence_files": [".devcontainer/devcontainer.json"],
+      "transferable": true
+    },
+    {
+      "id": "S45",
+      "skill": "Writing operator-facing documentation with error code catalogs and troubleshooting workflows",
+      "evidence": "OPERATOR_QUICKREF.md documents all CLI commands, file path behavior modes, typed error codes with triggers and resolutions, run JSON inspection workflow, and security sanity checks. SECURITY.md provides a manual verification checklist.",
+      "evidence_strength": "strong",
+      "evidence_files": ["OPERATOR_QUICKREF.md", "SECURITY.md"],
+      "transferable": true
+    },
+    {
+      "id": "S46",
+      "skill": "Implementing text preprocessing pipelines for embedding (BOM stripping, whitespace normalization, heading removal)",
+      "evidence": "agent/embedding_fingerprint.py normalize_embedding_text() and preprocess_chunk_text() strip BOM, normalize whitespace, and remove markdown heading markers. preprocess_query_text() applies query-specific normalization. compute_embed_sig() generates deterministic signatures for change detection.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/embedding_fingerprint.py"],
+      "transferable": true
+    },
+    {
+      "id": "S47",
+      "skill": "Implementing evidence requirement detection via regex-based question classification",
+      "evidence": "agent/__main__.py evidence_required_by_question() uses compiled regex patterns to detect file extensions, explicit read requests, summarization patterns, and content queries. Evidence requirement is also upgraded to true if model emits a tool call in Pass 1.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S48",
+      "skill": "Implementing evidence validation with typed field checks and metadata consistency enforcement",
+      "evidence": "agent/__main__.py validates evidence objects for required fields (path, sha256, chars_full, chars_returned, truncated, text), type correctness, character count consistency, and empty file detection for summarization tasks. Invalid evidence produces EVIDENCE_INVALID error code.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S49",
+      "skill": "Stripping LLM thinking/reasoning tokens from logged responses",
+      "evidence": "agent/__main__.py strips message.thinking content from raw model responses before writing to run JSON, preserving audit integrity while removing internal reasoning artifacts.",
+      "evidence_strength": "moderate",
+      "evidence_files": ["agent/__main__.py"],
+      "transferable": true
+    },
+    {
+      "id": "S50",
+      "skill": "Implementing JSON-object span detection with string/escape-aware brace tracking",
+      "evidence": "agent/protocol.py _find_first_json_object_span() scans character-by-character tracking brace depth, in_string state, and escape flag to find the first complete JSON object. Handles nested objects, strings containing braces, and escaped characters.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/protocol.py", "tests/test_protocol_tool_call_parsing.py"],
+      "transferable": true
+    },
+    {
+      "id": "S51",
+      "skill": "Implementing foreign key enforcement and cascade deletes in SQLite",
+      "evidence": "agent/index_db.py, agent/embeddings_db.py, and agent/memory_db.py all enable PRAGMA foreign_keys=ON and use ON DELETE CASCADE for referential integrity (e.g., memory_evidence references memory, chunks reference docs).",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/index_db.py", "agent/embeddings_db.py", "agent/memory_db.py"],
+      "transferable": true
+    },
+    {
+      "id": "S52",
+      "skill": "Implementing Windows path anchor detection for cross-platform security",
+      "evidence": "agent/tools.py _has_windows_anchor() detects Windows drive letters and UNC paths to deny them on any platform, ensuring consistent security behavior regardless of OS.",
+      "evidence_strength": "strong",
+      "evidence_files": ["agent/tools.py"],
+      "transferable": true
+    }
+  ],
+  "evidence_basis": {
+    "primary_sources": [
+      "Python source code in agent/ (20 modules, ~7700 lines)",
+      "Unit tests in tests/ (21 test files, ~164 tests)",
+      "Configuration in configs/default.yaml",
+      "Documentation in README.md, OPERATOR_QUICKREF.md, SECURITY.md",
+      "Utility scripts in scripts/",
+      "Package metadata in pyproject.toml and requirements.txt",
+      "Devcontainer configuration in .devcontainer/"
+    ],
+    "evidence_quality_notes": [
+      "Most skills are supported by both implementation code AND dedicated test coverage, yielding strong evidence.",
+      "Skills related to LLM output handling (S49, S12) rely on code inspection of __main__.py where the logic is dense but testable via contract tests.",
+      "The Ollama integration (S13) is evidenced by HTTP client code and config normalization but actual end-to-end LLM interaction cannot be verified without a running Ollama instance.",
+      "The devcontainer skill (S44) is evidenced by configuration only; actual container behavior depends on external runtime."
+    ]
+  },
+  "ambiguities_or_borderline_calls": [
+    {
+      "topic": "Full-text search implementation",
+      "note": "The lexical search uses instr() for positional matching rather than SQLite FTS5, so 'FTS implementation' would overclaim. Described as 'positional text search' instead.",
+      "resolution": "Downgraded wording to avoid implying FTS5 module usage."
+    },
+    {
+      "topic": "CUDA GPU utilization",
+      "note": "The torch embedder supports device='auto'/'cuda' with dtype selection, but whether CUDA is actually exercised depends on the runtime environment. The code is CUDA-ready but we cannot confirm GPU usage from the repository alone.",
+      "resolution": "Described as 'CUDA/CPU device selection' rather than 'GPU-accelerated embedding'."
+    },
+    {
+      "topic": "End-to-end LLM orchestration testing",
+      "note": "The two-pass ask flow and format violation retry logic are implemented in __main__.py but the tests primarily use mocked/patched dispatch rather than full LLM integration. The orchestration code is present and structured, but integration testing evidence is moderate.",
+      "resolution": "Included at strong evidence level because the orchestration logic is concretely implemented and structurally verifiable even without live LLM tests."
+    },
+    {
+      "topic": "Cross-platform path handling",
+      "note": "Windows anchor detection (_has_windows_anchor) and OS-agnostic path resolution are implemented, but the test suite likely runs on a single platform. Cross-platform correctness is designed-for but not exhaustively verified.",
+      "resolution": "Included the Windows anchor detection skill (S52) since the implementation is concrete, but noted the testing limitation."
+    },
+    {
+      "topic": "Memory system maturity",
+      "note": "The memory system (memory_db.py) implements full CRUD, typed records, and evidence linking, but the tests directory does not contain a dedicated test_memory_db.py file. Evidence linking and dangling reference detection are implemented in code but test coverage may be indirect via doctor checks.",
+      "resolution": "Included at strong evidence level for the implementation but noted that dedicated memory unit tests may be exercised through integration paths."
+    },
+    {
+      "topic": "Schema versioning as migration framework",
+      "note": "The v1→v2→v3 migration in index_db.py is concrete but limited to one database. Calling it a 'migration framework' would overclaim. It is a schema migration implementation specific to the index database.",
+      "resolution": "Described as 'designing SQLite schema migrations with version tracking' rather than 'building a migration framework'."
+    }
+  ],
+  "main_takeaway": "This repository demonstrates a disciplined, security-first approach to building a local LLM-powered QA system. The strongest and most distinctive skill signals are: (1) layered filesystem sandboxing with typed denial codes and symlink defense, (2) two-pass LLM orchestration with evidence gating and fail-closed behavior, (3) structured JSON tool-call parsing with graceful fallback strategies, (4) hybrid retrieval with fingerprint-based staleness detection, and (5) comprehensive audit logging. The implementation consistently prioritizes explicit contracts (typed errors, schema versions, evidence metadata) over implicit behavior, and fail-closed correctness over best-effort flexibility. These skills translate directly to roles involving secure tooling design, integration-aware systems, CLI-first workflows, and deterministic automation.",
+  "skill_clusters": [
+    {
+      "cluster": "Filesystem Security & Sandboxing",
+      "skill_ids": ["S05", "S06", "S07", "S08", "S52"],
+      "note": "Tight cluster around read-only file access policy enforcement with multiple defensive layers."
+    },
+    {
+      "cluster": "LLM Orchestration & Output Control",
+      "skill_ids": ["S09", "S10", "S11", "S12", "S14", "S15", "S47", "S48", "S49"],
+      "note": "Evidence-gated two-pass flow with structured parsing, format enforcement, and retry logic."
+    },
+    {
+      "cluster": "Document Indexing & Chunking",
+      "skill_ids": ["S16", "S17", "S18", "S19", "S20", "S21"],
+      "note": "Phase 2 pipeline: markdown → chunks → SQLite index with incremental updates."
+    },
+    {
+      "cluster": "Vector Embedding & Hybrid Retrieval",
+      "skill_ids": ["S22", "S23", "S24", "S25", "S26", "S27", "S37", "S46"],
+      "note": "Phase 3 pipeline: embedder abstraction → vector storage → fusion retrieval with staleness detection."
+    },
+    {
+      "cluster": "Citation & Audit",
+      "skill_ids": ["S28", "S29", "S30", "S31"],
+      "note": "Output provenance: citation parsing, validation, scope footers, and run JSON logging."
+    },
+    {
+      "cluster": "Configuration & Runtime Resolution",
+      "skill_ids": ["S03", "S34", "S35", "S36"],
+      "note": "Multi-level configuration precedence, URL validation, and path resolution."
+    },
+    {
+      "cluster": "CLI & Packaging",
+      "skill_ids": ["S01", "S02", "S04", "S38", "S41"],
+      "note": "Subcommand CLI, typed errors, entry points, doctor checks, and packaging."
+    },
+    {
+      "cluster": "Testing & Quality",
+      "skill_ids": ["S39", "S40"],
+      "note": "Security boundary tests and CLI contract stability tests."
+    },
+    {
+      "cluster": "Memory & Persistence",
+      "skill_ids": ["S32", "S33", "S51"],
+      "note": "Typed durable memory with evidence linking and referential integrity."
+    },
+    {
+      "cluster": "DevOps & Documentation",
+      "skill_ids": ["S42", "S43", "S44", "S45"],
+      "note": "Release automation, artifact cleanup, devcontainer config, operator docs."
+    }
+  ],
+  "transferable_signal_notes": [
+    "Filesystem sandboxing skills (S05-S08, S52) transfer directly to any security-sensitive tooling, plugin systems, or file-processing pipelines where untrusted paths must be constrained.",
+    "Two-pass LLM orchestration (S09, S11, S12) signals experience designing structured AI workflows with explicit control flow, not just prompt engineering.",
+    "Typed error codes (S02) and evidence validation (S48) demonstrate a preference for deterministic, debuggable systems over opaque failure modes—highly relevant for production tooling and API design.",
+    "Hybrid retrieval with fingerprint staleness detection (S24, S27) signals understanding of both IR fundamentals and operational concerns (cache invalidation, model drift).",
+    "The consistent use of SQLite across three databases with schema migration (S20), foreign keys (S51), and typed metadata storage demonstrates practical relational database design without over-engineering.",
+    "Abstract embedder interface (S37) with two concrete implementations shows familiarity with provider-agnostic design patterns applicable to any pluggable integration.",
+    "Run JSON audit logging (S31) translates directly to compliance, debugging, and observability requirements in production systems."
+  ],
+  "overclaim_risks": [
+    "Do not claim 'machine learning engineering' from this repository—embedding usage is applied (model invocation and vector operations) rather than ML model development.",
+    "Do not claim 'distributed systems' from Ollama HTTP integration—this is a single-client, single-server integration pattern.",
+    "Do not claim 'full-text search expertise' from the positional substring matching—it uses instr() rather than dedicated FTS engines.",
+    "Do not claim 'cross-platform development' solely from Windows anchor detection—OS-agnostic intent is visible but test-verified behavior is likely single-platform.",
+    "Do not claim 'RAG system architecture' as a broad capability—this implements one specific, intentionally narrow RAG pattern (single-tool, single-document, evidence-gated)."
+  ],
+  "dedupe_notes_for_cross_repo_merge": [
+    "S01 (CLI with argparse): Likely recurrent across Python CLI projects. Merge by keeping the most feature-rich instance.",
+    "S03 (config precedence chains): May appear in other projects with env-var overrides. Merge if identical pattern.",
+    "S20 (SQLite schema migrations): Check if other repos also implement manual PRAGMA user_version migrations vs using a migration library.",
+    "S35 (YAML config loading): Generic skill, likely shared. Keep the instance with most complex nested structure.",
+    "S41 (pyproject.toml packaging): Standard Python packaging skill. Merge across repos, keep version with optional dependency groups.",
+    "S44 (devcontainer setup): May recur across repos with GitHub Codespaces support. Merge by noting volume mount and env var patterns.",
+    "S39 (security boundary testing): Keep the most comprehensive test example as canonical."
+  ]
+}
