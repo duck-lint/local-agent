@@ -5,8 +5,8 @@
     "description": "A security-focused CLI wrapper around Ollama for evidence-gated question answering over local documents. Implements a two-pass LLM orchestration model (tool-selection then answer-only), sandboxed file access with typed error codes, markdown indexing with heading-aware chunking, hybrid lexical+vector retrieval, durable memory, citation validation, and full run-level audit logging. Intentionally narrow: one tool (read_text_file), one job (evidence-constrained QA), fail-closed behavior on missing evidence.",
     "language": "Python",
     "python_version": ">=3.11",
-    "lines_of_code_approx": 7700,
-    "test_count_approx": 164,
+    "lines_of_code": 8091,
+    "test_count": 164,
     "test_framework": "unittest",
     "external_integrations": [
       "Ollama (HTTP API for generation and embedding)",
@@ -435,8 +435,8 @@
   ],
   "evidence_basis": {
     "primary_sources": [
-      "Python source code in agent/ (20 modules, ~7700 lines)",
-      "Unit tests in tests/ (21 test files, ~164 tests)",
+      "Python source code in agent/ (20 modules, 8091 lines)",
+      "Unit tests in tests/ (21 test files, 164 tests)",
       "Configuration in configs/default.yaml",
       "Documentation in README.md, OPERATOR_QUICKREF.md, SECURITY.md",
       "Utility scripts in scripts/",
