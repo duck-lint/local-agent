@@ -9,10 +9,20 @@ from agent.app import LocalAgentApp
 from agent.runtime import print_output, render_query_results
 from agent.tools import ToolError
 
+_DOCTOR_CHECK_PREFIX = {"ok": "ok", "warning": "warn", "failure": "fail"}
+
 
 def _emit_error(payload: dict[str, Any]) -> int:
     print(json.dumps(payload, ensure_ascii=False), file=sys.stderr)
     return 1
+
+
+def _doctor_check_state(*, ok: bool, code: str) -> str:
+    if ok:
+        return "ok"
+    if code.endswith("_WARN"):
+        return "warning"
+    return "failure"
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -252,6 +262,7 @@ def main() -> int:
             "summary": report.summary,
             "checks": [
                 {
+                    "state": _doctor_check_state(ok=check.ok, code=check.code),
                     "ok": check.ok,
                     "code": check.code,
                     "message": check.message,
@@ -264,7 +275,8 @@ def main() -> int:
             print_output(json.dumps(payload, ensure_ascii=False))
         else:
             for check in report.checks:
-                prefix = "ok" if check.ok else "fail"
+                state = _doctor_check_state(ok=check.ok, code=check.code)
+                prefix = _DOCTOR_CHECK_PREFIX.get(state, "fail")
                 print_output(f"[{prefix}] {check.code}: {check.message}")
                 if check.suggested_fix:
                     print_output(f"fix: {check.suggested_fix}")

@@ -74,6 +74,8 @@ local-agent ask "Summarize the indexed notes about coherence."
   - skip network reachability checks
 - `doctor --require-grounding`
   - fail unless embeddings and retrieval are ready
+- `doctor`
+  - surfaces missing embeddings and similar readiness gaps as warnings unless `--require-grounding` is set
 - `ask --fast`
   - force the faster answer path
 - `ask --big`
