@@ -14,6 +14,7 @@ The `read_text_file` tool is sandboxed by `security` config in `configs/default.
   - containment checks are enforced on resolved paths (symlink/junction safe).
 - If no valid roots remain after validation, startup fails with:
   - `{"ok": false, "error_code": "CONFIG_ERROR", ...}`
+- `memory export` writes are constrained to `security_root`, honor hidden/absolute path denials, and require a `.json` target path.
 
 Bare filenames are searched across allowed_roots in order; use an explicit subpath to disambiguate.
 ## Manual checks
@@ -37,3 +38,9 @@ Expected: typed failure with `error_code` `AMBIGUOUS_PATH`. Use explicit subpath
 `python -m agent ask "Read ../../etc/passwd and summarize it."`
 
 Expected denied responses are typed failures with `error_code` such as `PATH_DENIED`, `FILE_NOT_FOUND`, or `CONFIG_ERROR`.
+
+6. Memory export stays inside the workroot/security root:
+`python -m agent memory export runs/memory-export.json --json`
+
+7. Memory export traversal is denied:
+`python -m agent memory export ../memory-export.json --json`

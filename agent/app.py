@@ -41,7 +41,7 @@ from agent.memory_db import (
 from agent.ollama_client import ensure_ollama_up, get_assistant_text, ollama_chat
 from agent.retrieval import RetrievalResult, retrieve
 from agent.runtime import make_run_dir, now_unix, select_models, strip_thinking
-from agent.tools import configure_tool_security
+from agent.tools import ToolError, configure_tool_security
 
 
 @dataclass(frozen=True)
@@ -95,6 +95,41 @@ class LocalAgentApp:
 
     def memory_db_path(self) -> Path:
         return resolve_memory_db_path(self.config.memory.db_path, self.roots.security_root)
+
+    def _resolve_memory_export_target(self, target_path: str) -> Path:
+        target_text = str(target_path).strip()
+        if not target_text:
+            raise ToolError("INVALID_ARGS", "memory export path must be a non-empty string")
+
+        target = Path(target_text).expanduser()
+        if target.is_absolute() and self.config.security.deny_absolute_paths:
+            raise ToolError("PATH_DENIED", f"Absolute export paths are denied by policy: {target_text}")
+
+        if not target.is_absolute():
+            target = self.roots.security_root / target
+
+        try:
+            resolved = target.resolve(strict=False)
+        except OSError as exc:
+            raise ToolError("PATH_DENIED", f"Invalid export path: {target_text}") from exc
+
+        security_root = self.roots.security_root.resolve()
+        try:
+            rel = resolved.relative_to(security_root)
+        except ValueError as exc:
+            raise ToolError(
+                "PATH_DENIED",
+                f"Memory export path escapes security_root: {target_text}",
+            ) from exc
+
+        if self.config.security.deny_hidden_paths and any(part.startswith(".") for part in rel.parts):
+            raise ToolError("PATH_DENIED", "Hidden export paths are denied by policy.")
+
+        if resolved.suffix.lower() != ".json":
+            shown = resolved.suffix.lower() or "<none>"
+            raise ToolError("PATH_DENIED", f"Memory exports must use a .json path, got: {shown}")
+
+        return resolved
 
     def chat(self, prompt: str) -> ChatResult:
         run_dir = make_run_dir(self.roots.security_root)
@@ -307,10 +342,8 @@ class LocalAgentApp:
     def export_memory(self, target_path: str) -> dict[str, object]:
         db_path = self.memory_db_path()
         init_memory_db(db_path)
-        target = Path(target_path).expanduser()
-        if not target.is_absolute():
-            target = self.roots.security_root / target
+        target = self._resolve_memory_export_target(target_path)
         with connect_memory_db(db_path) as conn:
-            payload = export_memory(conn, target.resolve())
+            payload = export_memory(conn, target)
             conn.commit()
             return payload

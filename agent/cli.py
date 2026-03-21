@@ -214,7 +214,16 @@ def main() -> int:
             print_output(json.dumps(payload, ensure_ascii=False) if getattr(args, "json", False) else str(deleted))
             return 0 if deleted else 1
         if action == "export":
-            payload = app.export_memory(getattr(args, "path"))
+            try:
+                payload = app.export_memory(getattr(args, "path"))
+            except Exception as exc:
+                return _emit_error(
+                    {
+                        "ok": False,
+                        "error_code": getattr(exc, "code", "MEMORY_EXPORT_ERROR"),
+                        "error_message": str(exc),
+                    }
+                )
             if getattr(args, "json", False):
                 print_output(json.dumps(payload, ensure_ascii=False))
             else:

@@ -12,6 +12,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from agent.cli import build_parser, main
+from agent.tools import ToolError
 
 
 class _StubApp:
@@ -68,6 +69,11 @@ class _StubApp:
                 )
             ],
         )
+
+    def export_memory(self, path: str):
+        if path.startswith(".."):
+            raise ToolError("PATH_DENIED", "Memory export path escapes security_root")
+        return {"ok": True, "schema_version": 2, "items": []}
 
 
 class CliAdapterTests(unittest.TestCase):
@@ -137,6 +143,21 @@ class CliAdapterTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(app.ask_calls, [("where is alpha?", True, False)])
         self.assertIn("grounded answer", stdout.getvalue())
+
+    def test_memory_export_reports_typed_path_error(self) -> None:
+        app = _StubApp()
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("agent.cli.LocalAgentApp.from_config", return_value=app):
+            with patch.object(sys, "argv", ["agent", "memory", "export", "../memory-export.json", "--json"]):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = main()
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertEqual(payload["ok"], False)
+        self.assertEqual(payload["error_code"], "PATH_DENIED")
 
 
 if __name__ == "__main__":
