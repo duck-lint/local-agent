@@ -84,6 +84,7 @@ class RuntimeAppTests(unittest.TestCase):
             retrieval = app.retrieve("alpha evidence")
             self.assertGreaterEqual(len(retrieval.candidates), 1)
             chunk = retrieval.candidates[0]
+            # Deliberately omit the `|` separator so the citation marker is counted but not parseable.
             answer_text = f"alpha evidence lives here. [source: {chunk.rel_path}#{chunk.heading_path} {chunk.chunk_key}]"
 
             with patch("agent.grounding.ensure_ollama_up"):
@@ -93,6 +94,7 @@ class RuntimeAppTests(unittest.TestCase):
 
         self.assertFalse(grounded.ok)
         self.assertEqual(grounded.error_code, "ASK_CITATION_INVALID")
+        self.assertIn("Citation validation failed", str(grounded.error_message))
         citation_report = grounded.record["citation_validation"]
         self.assertEqual(citation_report["citation_markers_found"], 1)
         self.assertEqual(citation_report["parsed_citations_count"], 0)
@@ -115,6 +117,7 @@ class RuntimeAppTests(unittest.TestCase):
             retrieval = app.retrieve("alpha evidence")
             self.assertGreaterEqual(len(retrieval.candidates), 1)
             chunk = retrieval.candidates[0]
+            # Trailing punctuation should normalize away so heading-only punctuation changes stay valid.
             answer_text = (
                 "alpha evidence lives here. "
                 f"[source: {chunk.rel_path}#{chunk.heading_path}!!! | {chunk.chunk_key}]"
@@ -128,7 +131,10 @@ class RuntimeAppTests(unittest.TestCase):
         self.assertTrue(grounded.ok)
         self.assertTrue(grounded.record["citation_validation"]["valid"])
         self.assertEqual(grounded.record["citation_validation"]["counts"]["path_mismatches"], 0)
-        self.assertIn("(missing=0, path_mismatches=0, hash_mismatches=0, not_in_snapshot=0)", grounded.text)
+        self.assertIn("missing=0", grounded.text)
+        self.assertIn("path_mismatches=0", grounded.text)
+        self.assertIn("hash_mismatches=0", grounded.text)
+        self.assertIn("not_in_snapshot=0", grounded.text)
 
 
 if __name__ == "__main__":
