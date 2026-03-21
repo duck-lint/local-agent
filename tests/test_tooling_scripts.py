@@ -3,7 +3,7 @@ from __future__ import annotations
 import importlib.util
 import tempfile
 import unittest
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
 
@@ -88,6 +88,11 @@ class ToolingScriptsTests(unittest.TestCase):
             self.assertIn("local-agent-workroot/allowed/sample/note.md", rel_paths)
             self.assertIn("local-agent-workroot/configs/local.yaml", rel_paths)
             self.assertNotIn("local-agent-workroot/runs/run.json", rel_paths)
+            self.assertTrue(
+                make_release_zip_script._is_excluded(
+                    PurePosixPath("local-agent-workroot/runs/run.json")
+                )
+            )
 
 
 if __name__ == "__main__":
