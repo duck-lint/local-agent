@@ -184,6 +184,8 @@ Command summary:
 - `memory add|list|delete|export`
 - `doctor`
 
+When memory records include `--chunk-key` evidence, those chunk keys are validated against the current corpus index. Memory exports also include corpus-contract provenance and any dangling evidence keys so downstream tooling can distinguish canonical evidence links from stale compatibility data.
+
 ## Setup
 
 Requirements:

@@ -18,6 +18,7 @@ class _StubApp:
     def __init__(self) -> None:
         self.ask_calls: list[tuple[str, bool, bool]] = []
         self.doctor_calls: list[tuple[bool, bool]] = []
+        self.memory_error: Exception | None = None
 
     def answer_grounded(
         self,
@@ -68,6 +69,12 @@ class _StubApp:
                 )
             ],
         )
+
+    def add_memory(self, *, memory_type: str, source: str, content: str, chunk_keys: list[str]):
+        _ = memory_type, source, content, chunk_keys
+        if self.memory_error is not None:
+            raise self.memory_error
+        return "memory-1"
 
 
 class CliAdapterTests(unittest.TestCase):
@@ -137,6 +144,40 @@ class CliAdapterTests(unittest.TestCase):
         self.assertEqual(stderr.getvalue(), "")
         self.assertEqual(app.ask_calls, [("where is alpha?", True, False)])
         self.assertIn("grounded answer", stdout.getvalue())
+
+    def test_memory_add_reports_structured_errors(self) -> None:
+        app = _StubApp()
+        app.memory_error = ValueError("memory evidence chunk_keys are not present in the current corpus: missing-key")
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("agent.cli.LocalAgentApp.from_config", return_value=app):
+            with patch.object(
+                sys,
+                "argv",
+                [
+                    "agent",
+                    "memory",
+                    "add",
+                    "--type",
+                    "user_fact",
+                    "--source",
+                    "derived_from_evidence",
+                    "--content",
+                    "remember",
+                    "--chunk-key",
+                    "missing-key",
+                    "--json",
+                ],
+            ):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = main()
+
+        self.assertEqual(rc, 1)
+        self.assertEqual(stdout.getvalue(), "")
+        payload = json.loads(stderr.getvalue())
+        self.assertFalse(payload["ok"])
+        self.assertEqual(payload["error_code"], "MEMORY_ERROR")
+        self.assertIn("not present in the current corpus", payload["error_message"])
 
 
 if __name__ == "__main__":

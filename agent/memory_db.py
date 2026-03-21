@@ -106,6 +106,7 @@ def add_memory(
     content: str,
     source: str,
     chunk_keys: Iterable[str],
+    allowed_chunk_keys: Optional[Iterable[str]] = None,
     memory_id: Optional[str] = None,
 ) -> str:
     memory_type = memory_type.strip()
@@ -121,6 +122,12 @@ def add_memory(
     keys = sorted({str(k).strip() for k in chunk_keys if str(k).strip()})
     if source == "derived_from_evidence" and not keys:
         raise ValueError("derived_from_evidence memory requires at least one chunk_key")
+    if allowed_chunk_keys is not None:
+        allowed = {str(k).strip() for k in allowed_chunk_keys if str(k).strip()}
+        missing = [key for key in keys if key not in allowed]
+        if missing:
+            rendered = ", ".join(missing)
+            raise ValueError(f"memory evidence chunk_keys are not present in the current corpus: {rendered}")
 
     now = time.time()
     record_id = memory_id or str(uuid.uuid4())
@@ -178,10 +185,29 @@ def list_memory(conn: sqlite3.Connection) -> list[dict[str, object]]:
     return out
 
 
-def export_memory(conn: sqlite3.Connection, target_path: Path) -> dict[str, object]:
+def export_memory(
+    conn: sqlite3.Connection,
+    target_path: Path,
+    *,
+    corpus_contract_sig: Optional[str] = None,
+    valid_chunk_keys: Optional[Iterable[str]] = None,
+) -> dict[str, object]:
+    checked_against_current_corpus = valid_chunk_keys is not None
+    dangling_evidence_chunk_keys: list[str] = []
+    if valid_chunk_keys is not None:
+        valid = {str(key).strip() for key in valid_chunk_keys if str(key).strip()}
+        dangling_evidence_chunk_keys = [key for key in iter_evidence_chunk_keys(conn) if key not in valid]
     payload = {
         "schema_version": SCHEMA_VERSION,
         "exported_at": time.time(),
+        "provenance": {
+            "memory_schema_version": SCHEMA_VERSION,
+            "corpus_contract_sig": corpus_contract_sig,
+        },
+        "validation": {
+            "checked_against_current_corpus": checked_against_current_corpus,
+            "dangling_evidence_chunk_keys": dangling_evidence_chunk_keys,
+        },
         "items": list_memory(conn),
     }
     target_path.parent.mkdir(parents=True, exist_ok=True)
