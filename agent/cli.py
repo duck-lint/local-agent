@@ -7,6 +7,7 @@ from typing import Any
 
 from agent.app import LocalAgentApp
 from agent.runtime import print_output, render_query_results
+from agent.tools import ToolError
 
 
 def _emit_error(payload: dict[str, Any]) -> int:
@@ -219,8 +220,22 @@ def main() -> int:
         if action == "export":
             try:
                 payload = app.export_memory(getattr(args, "path"))
-            except ValueError as exc:
-                return _emit_error({"ok": False, "error_code": "MEMORY_ERROR", "error_message": str(exc)})
+            except ToolError as exc:
+                return _emit_error(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "error_message": str(exc),
+                    }
+                )
+            except Exception as exc:
+                return _emit_error(
+                    {
+                        "ok": False,
+                        "error_code": "MEMORY_EXPORT_ERROR",
+                        "error_message": f"{type(exc).__name__}: {exc}",
+                    }
+                )
             if getattr(args, "json", False):
                 print_output(json.dumps(payload, ensure_ascii=False))
             else:

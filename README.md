@@ -274,13 +274,14 @@ python scripts/make_release_zip.py --include-workroot --workroot ../local-agent-
 
 ## Security Model
 
-Filesystem reads remain bounded by the policy in [`agent/tools.py`](agent/tools.py):
+Filesystem reads and durable-memory exports remain bounded by the policy in [`agent/tools.py`](agent/tools.py) and [`agent/app.py`](agent/app.py):
 
 - allowlisted roots only
 - allowlisted extensions only
 - hidden path denial by default
 - absolute path denial by default
 - lexical and resolved containment checks
+- durable-memory export stays under `security_root` and must target a `.json` file
 
 ## Contract Boundaries and Safest Integration Shape
 
