@@ -195,7 +195,7 @@ def main() -> int:
                     content=getattr(args, "content"),
                     chunk_keys=list(getattr(args, "chunk_key", None) or []),
                 )
-            except Exception as exc:
+            except ValueError as exc:
                 return _emit_error({"ok": False, "error_code": "MEMORY_ERROR", "error_message": str(exc)})
             payload = {"ok": True, "memory_id": memory_id}
             print_output(json.dumps(payload, ensure_ascii=False) if getattr(args, "json", False) else memory_id)
@@ -219,7 +219,7 @@ def main() -> int:
         if action == "export":
             try:
                 payload = app.export_memory(getattr(args, "path"))
-            except Exception as exc:
+            except ValueError as exc:
                 return _emit_error({"ok": False, "error_code": "MEMORY_ERROR", "error_message": str(exc)})
             if getattr(args, "json", False):
                 print_output(json.dumps(payload, ensure_ascii=False))

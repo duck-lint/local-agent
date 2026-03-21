@@ -201,7 +201,6 @@ def export_memory(
         "schema_version": SCHEMA_VERSION,
         "exported_at": time.time(),
         "provenance": {
-            "memory_schema_version": SCHEMA_VERSION,
             "corpus_contract_sig": corpus_contract_sig,
         },
         "validation": {
