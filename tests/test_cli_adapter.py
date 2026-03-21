@@ -6,6 +6,7 @@ import re
 import sys
 import tempfile
 import unittest
+from copy import deepcopy
 from contextlib import redirect_stderr, redirect_stdout
 from pathlib import Path
 from types import SimpleNamespace
@@ -18,6 +19,18 @@ class _StubApp:
     def __init__(self) -> None:
         self.ask_calls: list[tuple[str, bool, bool]] = []
         self.doctor_calls: list[tuple[bool, bool]] = []
+        self.doctor_result = SimpleNamespace(
+            ok=True,
+            summary={"require_grounding": False},
+            checks=[
+                SimpleNamespace(
+                    ok=True,
+                    code="DOCTOR_OLLAMA_OK",
+                    message="doctor check completed",
+                    suggested_fix=None,
+                )
+            ],
+        )
 
     def answer_grounded(
         self,
@@ -56,18 +69,14 @@ class _StubApp:
 
     def doctor(self, *, check_ollama: bool = True, require_grounding: bool = False):
         self.doctor_calls.append((check_ollama, require_grounding))
-        return SimpleNamespace(
-            ok=True,
-            summary={"require_grounding": require_grounding},
-            checks=[
-                SimpleNamespace(
-                    ok=True,
-                    code="DOCTOR_OLLAMA_SKIPPED" if not check_ollama else "DOCTOR_OLLAMA_OK",
-                    message="doctor check completed",
-                    suggested_fix=None,
-                )
-            ],
-        )
+        result = deepcopy(self.doctor_result)
+        if getattr(result, "summary", None) is not None:
+            result.summary["require_grounding"] = require_grounding
+        if getattr(result, "checks", None) and len(result.checks) > 0 and str(result.checks[0].code).startswith(
+            "DOCTOR_OLLAMA"
+        ):
+            result.checks[0].code = "DOCTOR_OLLAMA_SKIPPED" if not check_ollama else "DOCTOR_OLLAMA_OK"
+        return result
 
 
 class CliAdapterTests(unittest.TestCase):
@@ -123,6 +132,33 @@ class CliAdapterTests(unittest.TestCase):
         payload = json.loads(stdout.getvalue())
         self.assertTrue(payload["ok"])
         self.assertEqual(payload["summary"]["require_grounding"], True)
+        self.assertEqual(payload["checks"][0]["state"], "ok")
+
+    def test_doctor_human_output_labels_warning_without_failing_command(self) -> None:
+        app = _StubApp()
+        app.doctor_result = SimpleNamespace(
+            ok=True,
+            summary={"require_grounding": False},
+            checks=[
+                SimpleNamespace(
+                    ok=False,
+                    code="DOCTOR_EMBEDDINGS_MISSING_WARN",
+                    message="Embeddings DB is missing.",
+                    suggested_fix="Run: local-agent embed --json",
+                )
+            ],
+        )
+        stdout = io.StringIO()
+        stderr = io.StringIO()
+        with patch("agent.cli.LocalAgentApp.from_config", return_value=app):
+            with patch.object(sys, "argv", ["agent", "doctor"]):
+                with redirect_stdout(stdout), redirect_stderr(stderr):
+                    rc = main()
+
+        self.assertEqual(rc, 0)
+        self.assertEqual(stderr.getvalue(), "")
+        self.assertIn("[warn] DOCTOR_EMBEDDINGS_MISSING_WARN: Embeddings DB is missing.", stdout.getvalue())
+        self.assertIn("fix: Run: local-agent embed --json", stdout.getvalue())
 
     def test_ask_forwards_model_selection_flags(self) -> None:
         app = _StubApp()

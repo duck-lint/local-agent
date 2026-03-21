@@ -226,6 +226,7 @@ python -m agent ask "Summarize the indexed notes about coherence."
 - optional Ollama reachability
 
 Use `--require-grounding` when embeddings and retrieval must be ready for success.
+Without `--require-grounding`, missing or stale embeddings remain operator-visible warnings rather than a hard runtime failure.
 
 ## Testing
 
