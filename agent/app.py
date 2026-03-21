@@ -358,7 +358,23 @@ class LocalAgentApp:
         db_path = self.memory_db_path()
         init_memory_db(db_path)
         target = self._resolve_memory_export_target(target_path)
+        corpus_contract_sig: Optional[str] = None
+        valid_chunk_keys: Optional[list[str]] = None
+        corpus_db_path = self.corpus_db_path()
+        if corpus_db_path.exists():
+            try:
+                with connect_corpus_db(corpus_db_path) as corpus_conn:
+                    corpus_contract_sig = get_corpus_meta(corpus_conn, "corpus_contract_sig")
+                    valid_chunk_keys = list_chunk_keys(corpus_conn)
+            except sqlite3.DatabaseError:
+                corpus_contract_sig = None
+                valid_chunk_keys = None
         with connect_memory_db(db_path) as conn:
-            payload = export_memory(conn, target)
+            payload = export_memory(
+                conn,
+                target,
+                corpus_contract_sig=corpus_contract_sig,
+                valid_chunk_keys=valid_chunk_keys,
+            )
             conn.commit()
             return payload

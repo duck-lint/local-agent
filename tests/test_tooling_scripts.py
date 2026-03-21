@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import importlib.util
-import tempfile
+import shutil
 import unittest
+import uuid
+from contextlib import contextmanager
 from pathlib import Path, PurePosixPath
 from unittest.mock import patch
 
@@ -19,10 +21,22 @@ def _load_make_release_zip_module():
 make_release_zip_script = _load_make_release_zip_module()
 
 
+@contextmanager
+def _scratch_case():
+    temp_root = Path(__file__).resolve().parents[1] / ".tmp" / "tooling-tests"
+    temp_root.mkdir(parents=True, exist_ok=True)
+    case_root = temp_root / f"case-{uuid.uuid4().hex}"
+    case_root.mkdir(parents=True, exist_ok=True)
+    try:
+        yield case_root
+    finally:
+        shutil.rmtree(case_root, ignore_errors=True)
+
+
 class ToolingScriptsTests(unittest.TestCase):
     def test_resolve_workroot_prefers_argument_then_env_then_default(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace_root = Path(tmpdir) / "workspace"
+        with _scratch_case() as case_root:
+            workspace_root = case_root / "workspace"
             workspace_root.mkdir(parents=True, exist_ok=True)
 
             default_path = make_release_zip_script._resolve_workroot(workspace_root, env={})
@@ -30,22 +44,22 @@ class ToolingScriptsTests(unittest.TestCase):
 
             env_path = make_release_zip_script._resolve_workroot(
                 workspace_root,
-                env={make_release_zip_script.WORKROOT_ENV_VAR: str(Path(tmpdir) / "env-workroot")},
+                env={make_release_zip_script.WORKROOT_ENV_VAR: str(case_root / "env-workroot")},
             )
-            self.assertEqual(env_path, (Path(tmpdir) / "env-workroot").resolve())
+            self.assertEqual(env_path, (case_root / "env-workroot").resolve())
 
             explicit_path = make_release_zip_script._resolve_workroot(
                 workspace_root,
-                workroot=Path(tmpdir) / "cli-workroot",
-                env={make_release_zip_script.WORKROOT_ENV_VAR: str(Path(tmpdir) / "env-workroot")},
+                workroot=case_root / "cli-workroot",
+                env={make_release_zip_script.WORKROOT_ENV_VAR: str(case_root / "env-workroot")},
             )
-            self.assertEqual(explicit_path, (Path(tmpdir) / "cli-workroot").resolve())
+            self.assertEqual(explicit_path, (case_root / "cli-workroot").resolve())
 
     def test_collect_release_files_uses_explicit_workroot_prefix_and_excludes_runs(self) -> None:
-        with tempfile.TemporaryDirectory() as tmpdir:
-            workspace_root = Path(tmpdir) / "workspace"
+        with _scratch_case() as case_root:
+            workspace_root = case_root / "workspace"
             repo_root = workspace_root / "local-agent"
-            external_workroot = Path(tmpdir) / "external-workroot"
+            external_workroot = case_root / "external-workroot"
 
             (repo_root / "agent").mkdir(parents=True, exist_ok=True)
             (repo_root / "configs").mkdir(parents=True, exist_ok=True)

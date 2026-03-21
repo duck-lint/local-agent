@@ -5,6 +5,7 @@ import unittest
 
 from agent.corpus_db import connect_db as connect_corpus_db
 from agent.memory_db import add_memory, connect_db as connect_memory_db, init_db as init_memory_db
+from agent.tools import ToolError
 from tests.support import AppFixture
 
 
@@ -67,14 +68,24 @@ class MemoryContractTests(unittest.TestCase):
             mem_conn.commit()
 
         target = self.fx.workroot / "allowed" / "scratch" / "memory-export.json"
-        payload = app.export_memory(str(target))
+        payload = app.export_memory("allowed/scratch/memory-export.json")
         self.assertEqual(payload["schema_version"], 2)
         self.assertEqual(payload["provenance"]["corpus_contract_sig"], ingest.corpus_contract_sig)
         self.assertTrue(payload["validation"]["checked_against_current_corpus"])
         self.assertEqual(payload["validation"]["dangling_evidence_chunk_keys"], ["missing-chunk-key"])
 
         written = json.loads(target.read_text(encoding="utf-8"))
+        self.assertEqual(written["provenance"]["corpus_contract_sig"], ingest.corpus_contract_sig)
         self.assertEqual(written["validation"]["dangling_evidence_chunk_keys"], ["missing-chunk-key"])
+
+    def test_export_memory_denies_absolute_target_even_inside_security_root(self) -> None:
+        app = self.fx.build_app()
+        app.ingest_corpus()
+
+        absolute_target = self.fx.workroot / "allowed" / "scratch" / "absolute-export.json"
+        with self.assertRaises(ToolError) as ctx:
+            app.export_memory(str(absolute_target))
+        self.assertEqual(ctx.exception.code, "PATH_DENIED")
 
 
 if __name__ == "__main__":

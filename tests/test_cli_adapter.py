@@ -20,6 +20,7 @@ class _StubApp:
     def __init__(self) -> None:
         self.ask_calls: list[tuple[str, bool, bool]] = []
         self.doctor_calls: list[tuple[bool, bool]] = []
+        self.denied_export_paths: set[str] = {"../memory-export.json"}
         self.doctor_result = SimpleNamespace(
             ok=True,
             summary={"require_grounding": False},
