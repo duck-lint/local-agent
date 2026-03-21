@@ -256,4 +256,68 @@ Filesystem reads remain bounded by the policy in [`agent/tools.py`](agent/tools.
 - absolute path denial by default
 - lexical and resolved containment checks
 
+## Contract Boundaries and Safest Integration Shape
+
+Direct answer: the current repo contract is already library-first and coherent. Future work should treat `LocalAgentApp`, the corpus and embedding contracts, doctor checks, citation validation, and adapter thinness as the stable center. New work should integrate by extending those existing surfaces, not by reintroducing a staged pipeline shape or duplicating behavior in the CLI or a later UI.
+
+### Current Contract Map
+
+- API boundary
+  - `LocalAgentApp` in [`agent/app.py`](agent/app.py) is the canonical callable surface.
+  - Public operations return structured result objects rather than relying on CLI printing.
+- Data boundary
+  - `DocumentRecord` and `ChunkRecord` are the canonical corpus model reused by ingestion, embeddings, retrieval, grounding, diagnostics, and memory.
+  - The corpus contract includes stable document and chunk identity, heading paths, anchors, titles, hashes, metadata, dates, and outbound links.
+- Storage boundary
+  - SQLite remains the persistence spine for corpus state, embeddings, and durable memory.
+  - Embeddings and other derived state are rebuildable against the current contract rather than preserved for backward compatibility.
+- UI and adapter boundary
+  - The CLI is an adapter over `LocalAgentApp`; it forwards flags, serializes structured results, and should not own business logic.
+  - A future UI surface should call the same application layer directly.
+- Tooling and diagnostics boundary
+  - `doctor` is the canonical readiness check for security roots, corpus schema and contract alignment, embedding freshness, retrieval readiness, memory evidence integrity, and optional Ollama reachability.
+  - `runs/<run_id>/run.json` is part of the operational contract for auditable execution.
+- Security boundary
+  - Tool reads stay constrained to configured roots and extensions, with hidden paths and unsafe path traversal denied by policy.
+- Test boundary
+  - The tests protect vocabulary changes, corpus contract stability, callable app behavior, CLI adapter thinness, doctor readiness semantics, and tool security behavior.
+
+### Stable vs Transitional vs Accidental
+
+- Canonical and stable
+  - The library-first runtime shape.
+  - The `LocalAgentApp` callable API and structured result types.
+  - The corpus contract centered on `DocumentRecord` and `ChunkRecord`.
+  - Doctor check semantics, including `--require-grounding`.
+  - Thin-adapter CLI behavior.
+  - Security-root-bounded tool access.
+- Transitional but intentional
+  - The CLI itself is still an active surface, but its role is explicitly transitional toward shared adapter patterns rather than ownership of logic.
+  - The external embedding store is part of the intended architecture, but operational readiness still depends on actually populating it for the active corpus.
+- Accidental or underspecified
+  - Any change that depends on parsing human-readable CLI output instead of structured results.
+  - Any workflow that assumes derived SQLite state must survive contract or schema changes unchanged.
+  - Any new adapter that silently forks grounding, retrieval, or citation rules outside the runtime modules.
+
+### Safest Integration Shape
+
+- Add behavior in the application layer first, then expose it through thin adapters.
+- Reuse the existing contract objects and runtime helpers instead of inventing parallel payload shapes.
+- Treat corpus schema changes, chunk identity changes, embedding fingerprint changes, and citation format changes as contract changes that require synchronized updates to diagnostics and tests.
+- Keep grounded answering auditable: retrieved evidence, citations, and `run.json` output should stay aligned.
+- Prefer explicit structured outputs for automation, tests, and any later UI work.
+
+### Main Risk Areas
+
+- Corpus contract drift
+  - Changes to chunking, heading-path normalization, stable IDs, or metadata fields can invalidate embeddings, citations, memory evidence, and doctor readiness checks.
+- Derived-state drift
+  - Embedding configuration, preprocess signatures, and corpus contract signatures must remain aligned or be rebuilt together.
+- Adapter leakage
+  - Reintroducing business logic into the CLI or another surface would weaken the current contract and create behavior skew.
+- Security regressions
+  - Expanding filesystem access outside the current bounded policy would break an explicit repo invariant.
+- Ambiguity around readiness
+  - Non-strict doctor success does not mean grounded retrieval is ready; `--require-grounding` remains the explicit readiness contract when embeddings must be usable.
+
 This repo optimizes for inspectability, bounded behavior, and evidence discipline over flexibility.

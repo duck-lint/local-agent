@@ -37,6 +37,42 @@ def _fail(code: str, message: str, suggested_fix: str | None = None) -> DoctorCh
     return DoctorCheck(ok=False, code=code, message=message, suggested_fix=suggested_fix)
 
 
+def _append_memory_checks(
+    *,
+    checks: list[DoctorCheck],
+    summary: dict[str, object],
+    app_config: AppConfig,
+    security_root: Path,
+    chunk_keys: list[str],
+) -> None:
+    memory_db_path = resolve_memory_db_path(app_config.memory.db_path, security_root)
+    summary["memory_db_path"] = str(memory_db_path)
+    if not app_config.memory.enabled:
+        checks.append(_ok("DOCTOR_MEMORY_DISABLED", "Memory is disabled; memory checks skipped."))
+        return
+    init_memory_db(memory_db_path)
+    with connect_memory_db(memory_db_path) as mem_conn:
+        dangling = [key for key in iter_evidence_chunk_keys(mem_conn) if key not in set(chunk_keys)]
+    summary["dangling_memory_evidence"] = len(dangling)
+    if dangling:
+        checks.append(
+            _fail(
+                "DOCTOR_MEMORY_DANGLING_EVIDENCE",
+                f"Memory references {len(dangling)} chunk keys that are not present in the current corpus.",
+                suggested_fix="Reset memory state or reattach evidence under the rebuilt corpus.",
+            )
+        )
+    else:
+        checks.append(_ok("DOCTOR_MEMORY_EVIDENCE_OK", "Memory evidence links point at current corpus chunks."))
+
+
+def _report_ok(checks: list[DoctorCheck], *, require_grounding: bool) -> bool:
+    ok = all(check.ok or check.code.endswith("_WARN") for check in checks)
+    if require_grounding:
+        ok = all(check.ok for check in checks)
+    return ok
+
+
 def run_doctor(
     *,
     app_config: AppConfig,
@@ -65,7 +101,7 @@ def run_doctor(
                 suggested_fix="Run: local-agent index --rebuild --json",
             )
         )
-        return DoctorReport(ok=False, checks=checks, summary=summary)
+        return DoctorReport(ok=_report_ok(checks, require_grounding=require_grounding), checks=checks, summary=summary)
 
     try:
         with connect_corpus_db(corpus_db_path) as corpus_conn:
@@ -81,7 +117,7 @@ def run_doctor(
                 suggested_fix="Run: local-agent index --rebuild --json",
             )
         )
-        return DoctorReport(ok=False, checks=checks, summary=summary)
+        return DoctorReport(ok=_report_ok(checks, require_grounding=require_grounding), checks=checks, summary=summary)
     summary["documents_total"] = docs_total
     summary["chunks_total"] = chunks_total
     summary["corpus_contract_sig"] = stored_contract_sig
@@ -110,6 +146,8 @@ def run_doctor(
     else:
         checks.append(_ok("DOCTOR_CORPUS_CONTRACT_OK", "Corpus contract matches current configuration."))
 
+    chunks = load_corpus_chunks(corpus_db_path)
+    chunk_keys = [chunk["chunk_key"] for chunk in chunks]
     embeddings_db_path = resolve_embeddings_db_path(app_config.embeddings, security_root)
     summary["embeddings_db_path"] = str(embeddings_db_path)
     if not embeddings_db_path.exists():
@@ -121,13 +159,18 @@ def run_doctor(
                 suggested_fix="Run: local-agent embed --json",
             )
         )
-        return DoctorReport(ok=not require_grounding, checks=checks, summary=summary)
+        _append_memory_checks(
+            checks=checks,
+            summary=summary,
+            app_config=app_config,
+            security_root=security_root,
+            chunk_keys=chunk_keys,
+        )
+        return DoctorReport(ok=_report_ok(checks, require_grounding=require_grounding), checks=checks, summary=summary)
 
     provider, model_id, preprocess_name, chunk_preprocess_sig, query_preprocess_sig, _ = parse_embed_runtime(
         app_config.embeddings
     )
-    chunks = load_corpus_chunks(corpus_db_path)
-    chunk_keys = [chunk["chunk_key"] for chunk in chunks]
     try:
         with connect_embeddings_db(embeddings_db_path) as embed_conn:
             embeddings_total = count_embeddings(embed_conn)
@@ -146,7 +189,14 @@ def run_doctor(
                 suggested_fix="Run: local-agent embed --rebuild --json",
             )
         )
-        return DoctorReport(ok=False, checks=checks, summary=summary)
+        _append_memory_checks(
+            checks=checks,
+            summary=summary,
+            app_config=app_config,
+            security_root=security_root,
+            chunk_keys=chunk_keys,
+        )
+        return DoctorReport(ok=_report_ok(checks, require_grounding=require_grounding), checks=checks, summary=summary)
     summary["embeddings_total"] = embeddings_total
     summary["orphan_embeddings"] = orphan_embeddings
     summary["embed_provider"] = stored_provider
@@ -274,27 +324,13 @@ def run_doctor(
     else:
         checks.append(_ok("DOCTOR_OLLAMA_SKIPPED", "Ollama network checks were skipped."))
 
-    memory_db_path = resolve_memory_db_path(app_config.memory.db_path, security_root)
-    summary["memory_db_path"] = str(memory_db_path)
-    if not app_config.memory.enabled:
-        checks.append(_ok("DOCTOR_MEMORY_DISABLED", "Memory is disabled; memory checks skipped."))
-    else:
-        init_memory_db(memory_db_path)
-        with connect_memory_db(memory_db_path) as mem_conn:
-            dangling = [key for key in iter_evidence_chunk_keys(mem_conn) if key not in set(chunk_keys)]
-        summary["dangling_memory_evidence"] = len(dangling)
-        if dangling:
-            checks.append(
-                _fail(
-                    "DOCTOR_MEMORY_DANGLING_EVIDENCE",
-                    f"Memory references {len(dangling)} chunk keys that are not present in the current corpus.",
-                    suggested_fix="Reset memory state or reattach evidence under the rebuilt corpus.",
-                )
-            )
-        else:
-            checks.append(_ok("DOCTOR_MEMORY_EVIDENCE_OK", "Memory evidence links point at current corpus chunks."))
+    _append_memory_checks(
+        checks=checks,
+        summary=summary,
+        app_config=app_config,
+        security_root=security_root,
+        chunk_keys=chunk_keys,
+    )
 
-    ok = all(check.ok or check.code.endswith("_WARN") for check in checks)
-    if require_grounding:
-        ok = all(check.ok for check in checks)
+    ok = _report_ok(checks, require_grounding=require_grounding)
     return DoctorReport(ok=ok, checks=checks, summary=summary)
