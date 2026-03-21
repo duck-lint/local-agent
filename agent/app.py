@@ -125,9 +125,10 @@ class LocalAgentApp:
         if self.config.security.deny_hidden_paths and any(part.startswith(".") for part in rel.parts):
             raise ToolError("PATH_DENIED", "Hidden export paths are denied by policy.")
 
-        if resolved.suffix.lower() != ".json":
-            shown = resolved.suffix.lower() or "<none>"
-            raise ToolError("PATH_DENIED", f"Memory exports must use a .json path, got: {shown}")
+        suffix = resolved.suffix.lower()
+        if suffix != ".json":
+            shown = suffix or "<none>"
+            raise ToolError("PATH_DENIED", f"Memory exports must use a .json extension, got: {shown}")
 
         return resolved
 

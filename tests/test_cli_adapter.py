@@ -19,6 +19,7 @@ class _StubApp:
     def __init__(self) -> None:
         self.ask_calls: list[tuple[str, bool, bool]] = []
         self.doctor_calls: list[tuple[bool, bool]] = []
+        self.denied_export_paths = {"../memory-export.json"}
 
     def answer_grounded(
         self,
@@ -71,7 +72,7 @@ class _StubApp:
         )
 
     def export_memory(self, path: str):
-        if path.startswith(".."):
+        if path in self.denied_export_paths:
             raise ToolError("PATH_DENIED", "Memory export path escapes security_root")
         return {"ok": True, "schema_version": 2, "items": []}
 
