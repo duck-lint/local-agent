@@ -3,6 +3,7 @@ from __future__ import annotations
 import unittest
 from unittest.mock import patch
 
+from agent.tools import ToolError
 from agent.embeddings import sync_embeddings
 from tests.support import AppFixture, dummy_embedder_factory
 
@@ -60,6 +61,29 @@ class RuntimeAppTests(unittest.TestCase):
         self.assertTrue(grounded.ok)
         self.assertIn(chunk.chunk_key, grounded.text)
         self.assertTrue((grounded.run_dir / "run.json").exists())
+
+    def test_export_memory_writes_json_under_security_root(self) -> None:
+        app = self.fx.build_app()
+        app.add_memory(
+            memory_type="user_fact",
+            source="manual",
+            content="alpha is important",
+            chunk_keys=[],
+        )
+
+        payload = app.export_memory("runs/memory-export.json")
+
+        export_path = self.fx.workroot / "runs" / "memory-export.json"
+        self.assertTrue(export_path.exists())
+        self.assertEqual(payload["schema_version"], 2)
+        self.assertEqual(len(payload["items"]), 1)
+        self.assertEqual(payload["items"][0]["content"], "alpha is important")
+
+    def test_export_memory_denies_path_outside_security_root(self) -> None:
+        app = self.fx.build_app()
+        with self.assertRaises(ToolError) as ctx:
+            app.export_memory("../memory-export.json")
+        self.assertEqual(ctx.exception.code, "PATH_DENIED")
 
 
 if __name__ == "__main__":

@@ -8,8 +8,17 @@ This is the short runbook for the library-first runtime. For architecture and co
 
 ```bash
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -e .
+```
+
+Activate the environment:
+
+- Linux/macOS: `source .venv/bin/activate`
+- Windows PowerShell: `.\.venv\Scripts\Activate.ps1`
+
+Then install the package:
+
+```bash
+python -m pip install -e .
 ```
 
 2. Ensure the external workroot exists.
@@ -99,6 +108,24 @@ If the config still contains older pipeline keys, the runtime rejects it.
 - embeddings exist and match the active corpus and embedding settings
 - retrieval can return candidates when grounding is required
 - durable memory evidence still points at current chunk keys
+
+## Validation Order For Changes
+
+Validate contract surfaces in this order so failures stay interpretable:
+
+1. **CLI and config vocabulary**
+   - confirm the adapter still exposes the current runtime terms: `corpus`, `embeddings`, `retrieval`, `grounding`, `runs`, `memory`
+   - confirm `doctor` still uses `--require-grounding`
+2. **Corpus contract**
+   - re-run corpus sync and confirm document keys, chunk keys, headings, anchors, and metadata remain stable on a second pass
+3. **Grounded answer contract**
+   - grounded answers should either emit citations in the exact form `[source: rel_path#heading_path | chunk_key]` or surface citation-validation failures in `runs/<run_id>/run.json`
+   - heading normalization is intentionally tolerant of punctuation-only differences; changed path or chunk identity is not
+4. **Diagnostics**
+   - run `python -m agent doctor --no-ollama` first to isolate local schema and storage issues
+   - only treat `python -m agent doctor --require-grounding --json` as a readiness check after corpus and embeddings are current
+5. **Tool security**
+   - keep traversal, hidden-path, and ambiguous bare-filename denials intact
 
 ## Failure Triage
 

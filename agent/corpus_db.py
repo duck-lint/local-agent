@@ -438,3 +438,23 @@ def count_docs(conn: sqlite3.Connection) -> int:
 def count_chunks(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()
     return int(row["c"]) if row is not None else 0
+
+
+def list_chunk_keys(conn: sqlite3.Connection) -> list[str]:
+    rows = conn.execute("SELECT chunk_key FROM chunks ORDER BY chunk_key").fetchall()
+    return [str(row["chunk_key"]) for row in rows]
+
+
+def fetch_existing_chunk_keys(
+    conn: sqlite3.Connection,
+    chunk_keys: Iterable[str],
+) -> set[str]:
+    keys = sorted({str(key).strip() for key in chunk_keys if str(key).strip()})
+    if not keys:
+        return set()
+    placeholders = ",".join("?" for _ in keys)
+    rows = conn.execute(
+        f"SELECT chunk_key FROM chunks WHERE chunk_key IN ({placeholders})",
+        keys,
+    ).fetchall()
+    return {str(row["chunk_key"]) for row in rows}

@@ -7,6 +7,7 @@ from typing import Any
 
 from agent.app import LocalAgentApp
 from agent.runtime import print_output, render_query_results
+from agent.tools import ToolError
 
 _DOCTOR_CHECK_PREFIX = {"ok": "ok", "warning": "warn", "failure": "fail"}
 
@@ -198,12 +199,15 @@ def main() -> int:
     if args.cmd == "memory":
         action = getattr(args, "memory_cmd", "")
         if action == "add":
-            memory_id = app.add_memory(
-                memory_type=getattr(args, "type"),
-                source=getattr(args, "source"),
-                content=getattr(args, "content"),
-                chunk_keys=list(getattr(args, "chunk_key", None) or []),
-            )
+            try:
+                memory_id = app.add_memory(
+                    memory_type=getattr(args, "type"),
+                    source=getattr(args, "source"),
+                    content=getattr(args, "content"),
+                    chunk_keys=list(getattr(args, "chunk_key", None) or []),
+                )
+            except ValueError as exc:
+                return _emit_error({"ok": False, "error_code": "MEMORY_ERROR", "error_message": str(exc)})
             payload = {"ok": True, "memory_id": memory_id}
             print_output(json.dumps(payload, ensure_ascii=False) if getattr(args, "json", False) else memory_id)
             return 0
@@ -224,7 +228,24 @@ def main() -> int:
             print_output(json.dumps(payload, ensure_ascii=False) if getattr(args, "json", False) else str(deleted))
             return 0 if deleted else 1
         if action == "export":
-            payload = app.export_memory(getattr(args, "path"))
+            try:
+                payload = app.export_memory(getattr(args, "path"))
+            except ToolError as exc:
+                return _emit_error(
+                    {
+                        "ok": False,
+                        "error_code": exc.code,
+                        "error_message": str(exc),
+                    }
+                )
+            except Exception as exc:
+                return _emit_error(
+                    {
+                        "ok": False,
+                        "error_code": "MEMORY_EXPORT_ERROR",
+                        "error_message": f"{type(exc).__name__}: {exc}",
+                    }
+                )
             if getattr(args, "json", False):
                 print_output(json.dumps(payload, ensure_ascii=False))
             else:
