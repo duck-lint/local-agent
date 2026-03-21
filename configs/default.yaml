@@ -1,6 +1,6 @@
-model: gpt-oss:120b
+model: qwen2.5:14b-instruct
 model_fast: qwen2.5:14b-instruct
-model_big: gpt-oss:120b
+model_big: qwen2.5:14b-instruct
 prefer_fast: true
 big_triggers:
   - deep
@@ -19,7 +19,6 @@ max_tokens_big_second: 4500
 temperature: 0.2
 timeout_s: 300
 timeout_s_big_second: 600
-# Active knob: first read requests this many chars (clamped to tool hard cap).
 max_chars_full_read: 200000
 security:
   allowed_roots:
@@ -35,8 +34,8 @@ security:
   auto_create_allowed_roots: true
   roots_must_be_within_security_root: true
 workroot: "../local-agent-workroot/"
-phase2:
-  index_db_path: "index/index.sqlite"
+corpus:
+  db_path: "index/index.sqlite"
   sources:
     - name: corpus
       root: "allowed/corpus/"
@@ -44,50 +43,45 @@ phase2:
     - name: scratch
       root: "allowed/scratch/"
       kind: scratch
-  chunking:
-    scheme: obsidian_v1
-    max_chars: 1200
-    overlap: 120
-phase3:
-  embeddings_db_path: "embeddings/db/embeddings.sqlite"
-  embed:
-    provider: "torch"
-    model_id: "sentence-transformers/all-MiniLM-L6-v2"
-    preprocess: "obsidian_v1"
-    chunk_preprocess_sig: ""
-    query_preprocess_sig: ""
+  max_chars: 1200
+  overlap: 120
+embeddings:
+  db_path: "embeddings/db/embeddings.sqlite"
+  provider: "torch"
+  model_id: "sentence-transformers/all-MiniLM-L6-v2"
+  preprocess: "obsidian_v1"
+  chunk_preprocess_sig: ""
+  query_preprocess_sig: ""
+  batch_size: 64
+  torch:
+    local_model_path: ""
+    cache_dir: ""
+    device: "auto"
+    dtype: "float16"
     batch_size: 64
-    torch:
-      local_model_path: ""
-      cache_dir: ""
-      device: "auto"
-      dtype: "float16"
-      batch_size: 64
-      max_length: 512
-      pooling: "mean"
-      normalize: true
-      trust_remote_code: false
-      offline_only: true
-  retrieve:
-    lexical_k: 20
-    vector_k: 20
-    vector_fetch_k: 0
-    rel_path_prefix: ""
-    fusion: "simple_union"
-  ask:
-    evidence:
-      # Number of retrieved chunks admitted into ask prompt/snapshot/citation checks.
-      top_n: 8
-    citation_validation:
-      enabled: true
-      strict: false
-      require_in_snapshot: true
-      heading_match: "prefix"
-      normalize_heading: true
-  runs:
-    log_evidence_excerpts: true
-    max_total_evidence_chars: 200000
-    max_excerpt_chars: 1200
-  memory:
-    durable_db_path: "memory/durable.sqlite"
+    max_length: 512
+    pooling: "mean"
+    normalize: true
+    trust_remote_code: false
+    offline_only: true
+retrieval:
+  lexical_k: 20
+  vector_k: 20
+  vector_fetch_k: 0
+  rel_path_prefix: ""
+  fusion: "simple_union"
+grounding:
+  evidence_top_n: 8
+  citation_validation:
     enabled: true
+    strict: false
+    require_in_snapshot: true
+    heading_match: "prefix"
+    normalize_heading: true
+runs:
+  log_evidence_excerpts: true
+  max_total_evidence_chars: 200000
+  max_excerpt_chars: 1200
+memory:
+  db_path: "memory/durable.sqlite"
+  enabled: true

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping, Sequence
 
-from agent.index_db import connect_db as connect_index_db
+from agent.corpus_db import connect_db as connect_corpus_db
 from agent.retrieval import RetrievedChunk
 
 
@@ -15,7 +15,7 @@ class ChunkAuditRow:
     chunk_key: str
     rel_path: str
     heading_path: str
-    chunk_sha: str
+    chunk_hash: str
     text: str
 
 
@@ -31,22 +31,22 @@ _CITATION_PATTERN = re.compile(
 )
 
 
-def fetch_chunk_rows_for_keys(*, index_db_path: Path, chunk_keys: list[str]) -> dict[str, ChunkAuditRow]:
+def fetch_chunk_rows_for_keys(*, corpus_db_path: Path, chunk_keys: list[str]) -> dict[str, ChunkAuditRow]:
     unique_keys = sorted({key for key in chunk_keys if key})
     if not unique_keys:
         return {}
     placeholders = ",".join("?" for _ in unique_keys)
-    with connect_index_db(index_db_path) as conn:
+    with connect_corpus_db(corpus_db_path) as conn:
         rows = conn.execute(
             f"""
             SELECT
                 chunks.chunk_key AS chunk_key,
-                docs.rel_path AS rel_path,
-                COALESCE(chunks.heading_path, '') AS heading_path,
-                chunks.sha256 AS chunk_sha,
+                documents.rel_path AS rel_path,
+                chunks.heading_path AS heading_path,
+                chunks.chunk_hash AS chunk_hash,
                 chunks.text AS chunk_text
             FROM chunks
-            INNER JOIN docs ON docs.id = chunks.doc_id
+            INNER JOIN documents ON documents.id = chunks.doc_id
             WHERE chunks.chunk_key IN ({placeholders})
             """,
             unique_keys,
@@ -60,7 +60,7 @@ def fetch_chunk_rows_for_keys(*, index_db_path: Path, chunk_keys: list[str]) -> 
             chunk_key=chunk_key,
             rel_path=str(row["rel_path"] or ""),
             heading_path=str(row["heading_path"] or ""),
-            chunk_sha=str(row["chunk_sha"] or ""),
+            chunk_hash=str(row["chunk_hash"] or ""),
             text=str(row["chunk_text"] or ""),
         )
     return out
@@ -97,59 +97,55 @@ def build_evidence_log_entries(
 ) -> tuple[list[dict[str, Any]], bool, int]:
     total_cap = max(0, int(max_total_chars))
     excerpt_cap = max(0, int(max_excerpt_chars))
-
     entries: list[dict[str, Any]] = []
     total_chars = 0
     logging_truncated_total = False
     omitted_count = 0
 
-    for idx, item in enumerate(candidates):
+    for index, item in enumerate(candidates):
         remaining = total_cap - total_chars
         if remaining <= 0:
             logging_truncated_total = True
-            omitted_count = len(candidates) - idx
+            omitted_count = len(candidates) - index
             break
-
         row = chunk_rows.get(item.chunk_key)
         rel_path = row.rel_path if row is not None else item.rel_path
         heading_path = row.heading_path if row is not None else item.heading_path
-        chunk_sha = row.chunk_sha if row is not None else ""
+        chunk_hash = row.chunk_hash if row is not None else ""
         source_text = row.text if row is not None and row.text else item.text
-
         per_item_cap = min(excerpt_cap, remaining)
         excerpt = source_text[:per_item_cap]
         intended_without_total_cap = min(excerpt_cap, len(source_text))
         if len(excerpt) < intended_without_total_cap:
             logging_truncated_total = True
-
-        excerpt_truncated = len(source_text) > len(excerpt)
         total_chars += len(excerpt)
         entries.append(
             {
                 "chunk_key": item.chunk_key,
                 "rel_path": rel_path,
                 "heading_path": heading_path,
+                "chunk_anchor": item.chunk_anchor,
+                "chunk_title": item.chunk_title,
                 "method": item.method,
                 "scores": {
                     "merged": float(item.score),
                     "lexical": float(item.lexical_score),
                     "vector": float(item.vector_score),
                 },
-                "chunk_sha": chunk_sha,
+                "chunk_hash": chunk_hash,
                 "excerpt": excerpt,
-                "excerpt_truncated": bool(excerpt_truncated),
-                "excerpt_sha": hashlib.sha256(excerpt.encode("utf-8", errors="replace")).hexdigest(),
+                "excerpt_truncated": len(source_text) > len(excerpt),
+                "excerpt_hash": hashlib.sha256(excerpt.encode("utf-8", errors="replace")).hexdigest(),
             }
         )
-
     return entries, logging_truncated_total, omitted_count
 
 
 def validate_citations(
     *,
     parsed_citations: Sequence[ParsedCitation],
-    index_db_path: Path,
-    retrieval_snapshot_sha_by_key: Mapping[str, str],
+    corpus_db_path: Path,
+    retrieval_snapshot_hash_by_key: Mapping[str, str],
     enabled: bool,
     strict: bool,
     require_in_snapshot: bool,
@@ -191,28 +187,26 @@ def validate_citations(
             "all_citations_unparseable": all_citations_unparseable,
             "not_in_snapshot_chunk_keys": [],
             "missing_chunk_keys": [],
-            "mismatched_sha": [],
+            "mismatched_hash": [],
             "path_mismatches": [],
-            "sha_unchecked_chunk_keys": [],
+            "hash_unchecked_chunk_keys": [],
             "valid": True,
         }
         counts = citation_validation_counts(report)
-        _assert_citation_counts_consistent(report, counts)
         report["counts"] = counts
         return report
 
     cited_keys = sorted({item.chunk_key for item in parsed_citations if item.chunk_key})
-    db_rows = fetch_chunk_rows_for_keys(index_db_path=index_db_path, chunk_keys=cited_keys)
-
+    db_rows = fetch_chunk_rows_for_keys(corpus_db_path=corpus_db_path, chunk_keys=cited_keys)
     missing_keys: set[str] = set()
-    mismatched_sha: list[dict[str, str]] = []
+    mismatched_hash: list[dict[str, str]] = []
     path_mismatches: list[dict[str, str]] = []
-    sha_unchecked: set[str] = set()
+    hash_unchecked: set[str] = set()
     not_in_snapshot: set[str] = set()
     invalid_path_mismatch = False
-    seen_sha_mismatch: set[str] = set()
+    seen_hash_mismatch: set[str] = set()
     seen_path_mismatch: set[tuple[str, str, str, str, str, str]] = set()
-    snapshot_keys = set(retrieval_snapshot_sha_by_key.keys())
+    snapshot_keys = set(retrieval_snapshot_hash_by_key.keys())
 
     for citation in parsed_citations:
         if citation.chunk_key not in snapshot_keys:
@@ -227,21 +221,14 @@ def validate_citations(
         rel_mismatch = citation.rel_path != expected_rel
         expected_heading_raw = _normalize_citation_heading_token(row.heading_path)
         got_heading_raw = _normalize_citation_heading_token(citation.heading_path)
-        heading_mismatch_reason = ""
         heading_invalid = False
+        heading_mismatch_reason = ""
         heading_mismatch_for_report = False
-        expected_heading_cmp = _canonicalize_heading_path(
-            expected_heading_raw,
-            normalize_heading=normalize_heading_flag,
-        )
-        got_heading_cmp = _canonicalize_heading_path(
-            got_heading_raw,
-            normalize_heading=normalize_heading_flag,
-        )
+        expected_heading_cmp = _canonicalize_heading_path(expected_heading_raw, normalize_heading=normalize_heading_flag)
+        got_heading_cmp = _canonicalize_heading_path(got_heading_raw, normalize_heading=normalize_heading_flag)
 
         if heading_strategy == "ignore":
             heading_mismatch_for_report = expected_heading_raw != got_heading_raw
-            heading_invalid = False
             if heading_mismatch_for_report:
                 heading_mismatch_reason = "ignored"
         else:
@@ -308,19 +295,19 @@ def validate_citations(
         if rel_mismatch or heading_invalid:
             invalid_path_mismatch = True
 
-        snapshot_sha = str(retrieval_snapshot_sha_by_key.get(citation.chunk_key) or "")
-        if not snapshot_sha:
-            sha_unchecked.add(citation.chunk_key)
+        snapshot_hash = str(retrieval_snapshot_hash_by_key.get(citation.chunk_key) or "")
+        if not snapshot_hash:
+            hash_unchecked.add(citation.chunk_key)
             continue
-        if snapshot_sha != row.chunk_sha and citation.chunk_key not in seen_sha_mismatch:
-            mismatched_sha.append(
+        if snapshot_hash != row.chunk_hash and citation.chunk_key not in seen_hash_mismatch:
+            mismatched_hash.append(
                 {
                     "chunk_key": citation.chunk_key,
-                    "expected": row.chunk_sha,
-                    "got": snapshot_sha,
+                    "expected": row.chunk_hash,
+                    "got": snapshot_hash,
                 }
             )
-            seen_sha_mismatch.add(citation.chunk_key)
+            seen_hash_mismatch.add(citation.chunk_key)
 
     report = {
         "enabled": True,
@@ -335,20 +322,18 @@ def validate_citations(
         "all_citations_unparseable": all_citations_unparseable,
         "not_in_snapshot_chunk_keys": sorted(not_in_snapshot),
         "missing_chunk_keys": sorted(missing_keys),
-        "mismatched_sha": mismatched_sha,
+        "mismatched_hash": mismatched_hash,
         "path_mismatches": path_mismatches,
-        "sha_unchecked_chunk_keys": sorted(sha_unchecked),
+        "hash_unchecked_chunk_keys": sorted(hash_unchecked),
         "valid": (
             not missing_keys
-            and not mismatched_sha
+            and not mismatched_hash
             and not invalid_path_mismatch
             and unparseable_citations_count == 0
             and (not require_in_snapshot or not not_in_snapshot)
         ),
     }
-    counts = citation_validation_counts(report)
-    _assert_citation_counts_consistent(report, counts)
-    report["counts"] = counts
+    report["counts"] = citation_validation_counts(report)
     return report
 
 
@@ -356,41 +341,17 @@ def citation_validation_counts(report: Mapping[str, Any]) -> dict[str, int]:
     return {
         "missing": len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0),
         "path_mismatches": len(list(report.get("path_mismatches") or [])),
-        "sha_mismatches": len(list(report.get("mismatched_sha") or [])),
+        "hash_mismatches": len(list(report.get("mismatched_hash") or [])),
         "not_in_snapshot": len(list(report.get("not_in_snapshot_chunk_keys") or [])),
     }
 
 
 def format_citation_validation_footer(report: Mapping[str, Any]) -> str:
-    c = citation_validation_counts(report)
+    counts = citation_validation_counts(report)
     return (
-        f"(missing={c['missing']}, path_mismatches={c['path_mismatches']}, "
-        f"sha_mismatches={c['sha_mismatches']}, not_in_snapshot={c['not_in_snapshot']})"
+        f"(missing={counts['missing']}, path_mismatches={counts['path_mismatches']}, "
+        f"hash_mismatches={counts['hash_mismatches']}, not_in_snapshot={counts['not_in_snapshot']})"
     )
-
-
-def _assert_citation_counts_consistent(report: Mapping[str, Any], counts: Mapping[str, int]) -> None:
-    expected_missing = len(list(report.get("missing_chunk_keys") or [])) + int(report.get("unparseable_citations_count") or 0)
-    expected_path = len(list(report.get("path_mismatches") or []))
-    expected_sha = len(list(report.get("mismatched_sha") or []))
-    expected_snapshot = len(list(report.get("not_in_snapshot_chunk_keys") or []))
-    actual_missing = int(counts.get("missing", -1))
-    actual_path = int(counts.get("path_mismatches", -1))
-    actual_sha = int(counts.get("sha_mismatches", -1))
-    actual_snapshot = int(counts.get("not_in_snapshot", -1))
-    if (
-        actual_missing != expected_missing
-        or actual_path != expected_path
-        or actual_sha != expected_sha
-        or actual_snapshot != expected_snapshot
-    ):
-        raise ValueError(
-            "INTERNAL_CITATION_COUNTS_MISMATCH: "
-            f"expected(missing={expected_missing}, path_mismatches={expected_path}, "
-            f"sha_mismatches={expected_sha}, not_in_snapshot={expected_snapshot}) "
-            f"got(missing={actual_missing}, path_mismatches={actual_path}, "
-            f"sha_mismatches={actual_sha}, not_in_snapshot={actual_snapshot})"
-        )
 
 
 def _split_rel_and_heading(raw_path: str) -> tuple[str, str]:
@@ -426,13 +387,12 @@ def _split_heading_path(path: str, *, normalize_heading: bool) -> list[str]:
     raw = _normalize_citation_heading_token(path)
     if not raw:
         return []
-    parts = [_normalize_heading_segment(seg, normalize_heading=normalize_heading) for seg in raw.split(">")]
-    return [seg for seg in parts if seg]
+    parts = [_normalize_heading_segment(segment, normalize_heading=normalize_heading) for segment in raw.split(">")]
+    return [part for part in parts if part]
 
 
 def _canonicalize_heading_path(path: str, *, normalize_heading: bool) -> str:
-    segs = _split_heading_path(path, normalize_heading=normalize_heading)
-    return " > ".join(segs)
+    return " > ".join(_split_heading_path(path, normalize_heading=normalize_heading))
 
 
 def _heading_mismatch_reason(

@@ -6,7 +6,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 _SQLITE_IN_BATCH = 900
 
 
@@ -34,9 +34,12 @@ def init_db(db_path: Path) -> None:
             raise ValueError(
                 f"Embeddings DB schema version {version} is newer than supported {SCHEMA_VERSION}"
             )
-        if version < 1:
+        if version != SCHEMA_VERSION:
             conn.executescript(
                 """
+                DROP TABLE IF EXISTS embeddings;
+                DROP TABLE IF EXISTS meta;
+
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -57,7 +60,7 @@ def init_db(db_path: Path) -> None:
                 CREATE INDEX IF NOT EXISTS idx_embeddings_dim ON embeddings(dim);
                 """
             )
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             set_meta(conn, "schema_version", str(SCHEMA_VERSION))
         conn.executescript(
             """
@@ -155,7 +158,7 @@ def iter_embeddings(conn: sqlite3.Connection) -> list[sqlite3.Row]:
 def populate_temp_chunk_keys(
     conn: sqlite3.Connection,
     chunk_keys: Iterable[str],
-    table_name: str = "tmp_phase2_chunk_keys",
+    table_name: str = "tmp_corpus_chunk_keys",
 ) -> str:
     if not table_name or not table_name.replace("_", "").isalnum():
         raise ValueError(f"Invalid temp table name: {table_name!r}")

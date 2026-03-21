@@ -1,102 +1,307 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+import hashlib
 import re
-from typing import Dict, List, Optional, Tuple
+from dataclasses import dataclass
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Optional
+
+
+WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(\|([^\]]+))?\]\]")
+HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 
 
 @dataclass(frozen=True)
-class Chunk:
+class ChunkDraft:
     chunk_index: int
+    section_index: int
     start_char: int
     end_char: int
     text: str
-    section_ordinal: int
-    chunk_ordinal: int
-    heading_path: Optional[str]
+    heading_path: str
+    chunk_anchor: str
+    chunk_title: str
+    out_links: list[dict[str, str]]
 
 
-def split_frontmatter(text: str) -> Tuple[str, str]:
-    """
-    Return (frontmatter_block, body_text).
-    frontmatter_block includes only the YAML lines between --- delimiters.
-    """
+@dataclass(frozen=True)
+class Section:
+    section_index: int
+    anchor: str
+    title: str
+    heading_path: list[str]
+    text: str
+    start_char: int
+
+
+def sha256_text(value: str) -> str:
+    return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
+
+
+def stable_doc_key_from_rel_path(rel_path: str, namespace: str = "obsidian") -> str:
+    rel_posix = rel_path.replace("\\", "/").strip().lower()
+    return sha256_text(f"{namespace}:{rel_posix}")[:24]
+
+
+def canonicalize_source_uri(source_uri: str) -> str:
+    cleaned = source_uri.strip().replace("\\", "/")
+    cleaned = re.sub(r"/{2,}", "/", cleaned)
+    if cleaned.startswith("./"):
+        cleaned = cleaned[2:]
+    return cleaned
+
+
+def _normalize_heading_text(text: str) -> str:
+    return re.sub(r"\s+", " ", text.strip()).lower()
+
+
+def canonicalize_heading_path(heading_path: Any) -> list[str]:
+    if isinstance(heading_path, list):
+        parts = heading_path
+    elif isinstance(heading_path, str):
+        parts = [part.strip() for part in heading_path.split(">")]
+    else:
+        parts = []
+    out: list[str] = []
+    for item in parts:
+        if not isinstance(item, str):
+            continue
+        cleaned = _normalize_heading_text(item)
+        if cleaned:
+            out.append(cleaned)
+    return out
+
+
+def stable_chunk_key(
+    *,
+    source_uri: str,
+    heading_path: list[str],
+    section_index: int,
+    chunk_index: int,
+) -> str:
+    canonical_source = canonicalize_source_uri(source_uri)
+    canonical_heading = " > ".join(canonicalize_heading_path(heading_path))
+    return sha256_text(f"{canonical_source}|{canonical_heading}|{section_index}|{chunk_index}")[:32]
+
+
+def split_frontmatter(text: str) -> tuple[str, str]:
     if not text:
         return "", ""
-
-    raw = text
-    if raw.startswith("\ufeff"):
-        raw = raw[1:]
-
-    lines = raw.splitlines(keepends=True)
+    raw = text[1:] if text.startswith("\ufeff") else text
+    lines = raw.splitlines()
     if not lines or lines[0].strip() != "---":
         return "", raw
-
-    delimiter_index = -1
-    for i in range(1, len(lines)):
-        if lines[i].strip() == "---":
-            delimiter_index = i
-            break
-
-    if delimiter_index < 0:
-        return "", raw
-
-    frontmatter = "".join(lines[1:delimiter_index])
-    body = "".join(lines[delimiter_index + 1 :])
-    if body.startswith("\r\n"):
-        body = body[2:]
-    elif body.startswith("\n"):
-        body = body[1:]
-    return frontmatter, body
+    for index in range(1, len(lines)):
+        if lines[index].strip() == "---":
+            yaml_block = "\n".join(lines[1:index]).strip()
+            body = "\n".join(lines[index + 1 :]).lstrip("\n")
+            return yaml_block, body
+    return "", raw
 
 
-def _validate_chunk_args(max_chars: int, overlap: int) -> None:
-    if max_chars <= 0:
-        raise ValueError("max_chars must be > 0")
-    if overlap < 0:
-        raise ValueError("overlap must be >= 0")
-    if overlap >= max_chars:
-        raise ValueError("overlap must be smaller than max_chars")
+def parse_yaml_frontmatter(yaml_text: str) -> tuple[dict[str, Any], Optional[str]]:
+    if not yaml_text.strip():
+        return {}, None
+    try:
+        import yaml
+
+        loaded = yaml.safe_load(yaml_text)
+        if loaded is None:
+            return {}, None
+        if not isinstance(loaded, dict):
+            return {}, "frontmatter must be a mapping"
+        return loaded, None
+    except Exception as exc:
+        return {}, str(exc)
 
 
-def _format_heading_path(stack: Dict[int, str]) -> Optional[str]:
-    if not stack:
+def slugify(text: str) -> str:
+    cleaned = text.strip().lower()
+    cleaned = re.sub(r"[^\w\s-]", "", cleaned)
+    cleaned = re.sub(r"[\s_]+", "-", cleaned)
+    cleaned = re.sub(r"-{2,}", "-", cleaned)
+    return cleaned.strip("-") or "section"
+
+
+def parse_date_field(meta: dict[str, Any], key: str) -> Optional[str]:
+    raw = str(meta.get(key, "")).strip()
+    if not raw:
         return None
-    parts: List[str] = []
-    for level in sorted(stack):
-        title = stack[level].strip()
-        if title:
-            parts.append(f"H{level}: {title}")
-    if not parts:
+    if re.match(r"^\d{4}-\d{2}-\d{2}", raw):
+        return raw[:10]
+    try:
+        return datetime.fromisoformat(raw).date().isoformat()
+    except Exception:
         return None
-    return " > ".join(parts)
 
 
-def _split_large_text_sentenceish(
+def parse_source_date(meta: dict[str, Any], filename: str) -> Optional[str]:
+    from_meta = parse_date_field(meta, "note_creation_date")
+    if from_meta:
+        return from_meta
+    match = re.search(r"(\d{4}-\d{2}-\d{2})", filename)
+    if match:
+        return match.group(1)
+    return None
+
+
+def normalize_markdown_light(markdown: str) -> str:
+    lines = markdown.splitlines()
+    out: list[str] = []
+    in_code = False
+    for line in lines:
+        if line.strip().startswith("```"):
+            in_code = not in_code
+            continue
+        if not in_code and line.lstrip().startswith(">"):
+            out.append(line.lstrip()[1:].lstrip())
+            continue
+        out.append(line.rstrip("\n"))
+    text = "\n".join(out)
+    text = re.sub(r"\n{3,}", "\n\n", text).strip()
+    return (text + "\n") if text else ""
+
+
+def replace_wikilinks_and_collect(text: str) -> tuple[str, list[dict[str, str]]]:
+    out_links: list[dict[str, str]] = []
+
+    def _replace(match: re.Match[str]) -> str:
+        target = (match.group(1) or "").strip()
+        alias = (match.group(3) or "").strip()
+        item: dict[str, str] = {"target": target}
+        if alias:
+            item["alias"] = alias
+        out_links.append(item)
+        return alias if alias else target
+
+    cleaned = WIKILINK_RE.sub(_replace, text)
+    return cleaned, out_links
+
+
+def extract_wikilinks(text: str) -> list[str]:
+    seen: set[str] = set()
+    out: list[str] = []
+    for match in WIKILINK_RE.finditer(text):
+        target = (match.group(1) or "").strip()
+        if not target or target in seen:
+            continue
+        seen.add(target)
+        out.append(target)
+    return out
+
+
+def _format_heading_path(path: list[str]) -> str:
+    return " > ".join(path)
+
+
+def _pick_split_level(levels: list[int]) -> int:
+    if 2 in levels:
+        return 2
+    return min(levels)
+
+
+def split_into_sections(body_markdown: str) -> list[Section]:
+    lines = body_markdown.splitlines()
+    if not lines:
+        return []
+    levels_present: list[int] = []
+    for line in lines:
+        match = HEADING_RE.match(line)
+        if match:
+            levels_present.append(len(match.group(1)))
+    if not levels_present:
+        text = "\n".join(lines).strip()
+        if not text:
+            return []
+        return [
+            Section(
+                section_index=0,
+                anchor="preamble",
+                title="preamble",
+                heading_path=[],
+                text=text + "\n",
+                start_char=0,
+            )
+        ]
+
+    target_level = _pick_split_level(levels_present)
+    sections: list[Section] = []
+    current_title = "preamble"
+    current_path: list[str] = []
+    current_lines: list[str] = []
+    current_start = 0
+    heading_stack: dict[int, str] = {}
+    offset = 0
+    section_index = 0
+
+    def flush() -> None:
+        nonlocal current_lines, section_index, current_start
+        text = "\n".join(current_lines).strip()
+        if current_title == "preamble" and not text:
+            current_lines = []
+            current_start = offset
+            return
+        if text:
+            sections.append(
+                Section(
+                    section_index=section_index,
+                    anchor=slugify(current_title),
+                    title=current_title,
+                    heading_path=list(current_path),
+                    text=text + "\n",
+                    start_char=current_start,
+                )
+            )
+            section_index += 1
+        current_lines = []
+        current_start = offset
+
+    for line in lines:
+        match = HEADING_RE.match(line)
+        if match:
+            level = len(match.group(1))
+            title = match.group(2).strip()
+            heading_stack[level] = title
+            for key in list(heading_stack):
+                if key > level:
+                    del heading_stack[key]
+            if level == target_level:
+                flush()
+                current_title = title
+                current_path = [f"H{lvl}: {heading_stack[lvl]}" for lvl in sorted(heading_stack) if lvl <= target_level]
+                offset += len(line) + 1
+                current_start = offset
+                continue
+        current_lines.append(line)
+        offset += len(line) + 1
+    flush()
+    return sections
+
+
+def _split_large_paragraph(
     text: str,
     *,
     base_offset: int,
     max_chars: int,
     overlap: int,
-) -> List[Tuple[str, int, int]]:
+) -> list[tuple[str, int, int]]:
     if len(text) <= max_chars:
         return [(text, base_offset, base_offset + len(text))]
-
     boundary_re = re.compile(r"(?<=[.!?])(?:['\")\]]+)?\s+|[;:]\s+|\n")
     min_boundary = max(1, int(max_chars * 0.5))
-    fragments: List[Tuple[str, int, int]] = []
+    fragments: list[tuple[str, int, int]] = []
     start = 0
     text_len = len(text)
-    step = max_chars - overlap
-
+    step = max(1, max_chars - overlap)
     while start < text_len:
         window_end = min(text_len, start + max_chars)
         if window_end >= text_len:
             end = text_len
         else:
             window = text[start:window_end]
-            candidates = [m.end() for m in boundary_re.finditer(window)]
-            good = [idx for idx in candidates if idx >= min_boundary]
+            candidates = [match.end() for match in boundary_re.finditer(window)]
+            good = [index for index in candidates if index >= min_boundary]
             if good:
                 end = start + good[-1]
             else:
@@ -107,7 +312,7 @@ def _split_large_text_sentenceish(
                     end = window_end
         if end <= start:
             end = min(text_len, start + step)
-        piece = text[start:end]
+        piece = text[start:end].strip()
         if piece:
             fragments.append((piece, base_offset + start, base_offset + end))
         if end >= text_len:
@@ -116,284 +321,108 @@ def _split_large_text_sentenceish(
         if next_start <= start:
             next_start = end
         start = next_start
-
     return fragments
 
 
-def chunk_markdown_fixed_window_v1(
+def build_markdown_chunks(
+    *,
     body_text: str,
     max_chars: int,
     overlap: int,
-) -> List[Chunk]:
-    _validate_chunk_args(max_chars, overlap)
-    if not body_text:
+) -> list[ChunkDraft]:
+    if max_chars <= 0:
+        raise ValueError("max_chars must be > 0")
+    if overlap < 0 or overlap >= max_chars:
+        raise ValueError("overlap must be >= 0 and smaller than max_chars")
+    if not body_text.strip():
         return []
 
-    step = max_chars - overlap
-    chunks: List[Chunk] = []
-    chunk_index = 0
-    start = 0
-    text_len = len(body_text)
-
-    while start < text_len:
-        end = min(text_len, start + max_chars)
-        piece = body_text[start:end]
-        if piece:
-            chunks.append(
-                Chunk(
-                    chunk_index=chunk_index,
-                    start_char=start,
-                    end_char=end,
-                    text=piece,
-                    section_ordinal=0,
-                    chunk_ordinal=chunk_index,
-                    heading_path=None,
-                )
-            )
-            chunk_index += 1
-        if end >= text_len:
-            break
-        start += step
-
-    return chunks
-
-
-@dataclass(frozen=True)
-class _HeadingEvent:
-    line_index: int
-    start_char: int
-    end_char: int
-    level: int
-    title: str
-
-
-@dataclass(frozen=True)
-class _Paragraph:
-    text: str
-    start_char: int
-    end_char: int
-    heading_path: Optional[str]
-
-
-def _parse_heading_events(lines: List[str]) -> List[_HeadingEvent]:
-    heading_re = re.compile(r"^(#{1,6})\s+(.+?)\s*$")
-    out: List[_HeadingEvent] = []
-    offset = 0
-    for idx, line in enumerate(lines):
-        m = heading_re.match(line.rstrip("\r\n"))
-        end_offset = offset + len(line)
-        if m:
-            out.append(
-                _HeadingEvent(
-                    line_index=idx,
-                    start_char=offset,
-                    end_char=end_offset,
-                    level=len(m.group(1)),
-                    title=m.group(2).strip(),
-                )
-            )
-        offset = end_offset
-    return out
-
-
-def _section_boundaries(headings: List[_HeadingEvent]) -> Tuple[int, List[_HeadingEvent]]:
-    if not headings:
-        return 0, []
-    has_h2 = any(h.level == 2 for h in headings)
-    split_level = 2 if has_h2 else min(h.level for h in headings)
-    splits = [h for h in headings if h.level == split_level]
-    return split_level, splits
-
-
-def _collect_paragraphs_for_section(
-    lines: List[str],
-    headings_by_line: Dict[int, _HeadingEvent],
-    start_line: int,
-    end_line_exclusive: int,
-    initial_stack: Dict[int, str],
-) -> List[_Paragraph]:
-    paragraphs: List[_Paragraph] = []
-    stack = dict(initial_stack)
-
-    buffer: List[str] = []
-    para_start: Optional[int] = None
-    para_end: Optional[int] = None
-    offset = 0
-    for i in range(start_line):
-        offset += len(lines[i])
-
-    def flush() -> None:
-        nonlocal buffer, para_start, para_end
-        if not buffer or para_start is None or para_end is None:
-            buffer = []
-            para_start = None
-            para_end = None
-            return
-        text = "".join(buffer)
-        if text.strip():
-            paragraphs.append(
-                _Paragraph(
-                    text=text,
-                    start_char=para_start,
-                    end_char=para_end,
-                    heading_path=_format_heading_path(stack),
-                )
-            )
-        buffer = []
-        para_start = None
-        para_end = None
-
-    for line_index in range(start_line, end_line_exclusive):
-        line = lines[line_index]
-        line_start = offset
-        line_end = offset + len(line)
-        offset = line_end
-
-        event = headings_by_line.get(line_index)
-        if event is not None:
-            flush()
-            stack = {lvl: title for lvl, title in stack.items() if lvl < event.level}
-            stack[event.level] = event.title
-            continue
-
-        if not line.strip():
-            flush()
-            continue
-
-        if para_start is None:
-            para_start = line_start
-        para_end = line_end
-        buffer.append(line)
-
-    flush()
-    return paragraphs
-
-
-def chunk_markdown_obsidian_v1(
-    body_text: str,
-    max_chars: int,
-    overlap: int,
-) -> List[Chunk]:
-    _validate_chunk_args(max_chars, overlap)
-    if not body_text:
-        return []
-
-    lines = body_text.splitlines(keepends=True)
-    headings = _parse_heading_events(lines)
-    headings_by_line = {h.line_index: h for h in headings}
-    split_level, splits = _section_boundaries(headings)
-
-    section_ranges: List[Tuple[int, int, Optional[_HeadingEvent], Dict[int, str]]] = []
-    if not splits:
-        section_ranges.append((0, len(lines), None, {}))
-    else:
-        first_split = splits[0]
-        if first_split.line_index > 0:
-            section_ranges.append((0, first_split.line_index, None, {}))
-
-        stack: Dict[int, str] = {}
-        split_ranges: List[Tuple[_HeadingEvent, Dict[int, str]]] = []
-        for event in headings:
-            stack = {lvl: title for lvl, title in stack.items() if lvl < event.level}
-            stack[event.level] = event.title
-            if event.level == split_level:
-                split_ranges.append((event, dict(stack)))
-
-        for idx, (split_event, split_stack) in enumerate(split_ranges):
-            next_start = split_ranges[idx + 1][0].line_index if idx + 1 < len(split_ranges) else len(lines)
-            section_start = split_event.line_index + 1
-            section_ranges.append((section_start, next_start, split_event, split_stack))
-
-    chunks: List[Chunk] = []
+    sections = split_into_sections(body_text)
+    chunks: list[ChunkDraft] = []
     global_chunk_index = 0
 
-    for section_ordinal, (start_line, end_line, split_event, section_stack) in enumerate(section_ranges):
-        _ = split_event
-        paragraphs = _collect_paragraphs_for_section(
-            lines=lines,
-            headings_by_line=headings_by_line,
-            start_line=start_line,
-            end_line_exclusive=end_line,
-            initial_stack=section_stack,
-        )
+    for section in sections:
+        normalized = normalize_markdown_light(section.text)
+        paragraphs = [paragraph.strip() for paragraph in normalized.split("\n\n") if paragraph.strip()]
         if not paragraphs:
             continue
 
-        expanded: List[_Paragraph] = []
+        draft_parts: list[tuple[str, int, int, list[dict[str, str]]]] = []
+        section_offset = section.start_char
+        cursor = section_offset
         for paragraph in paragraphs:
-            if len(paragraph.text) <= max_chars:
-                expanded.append(paragraph)
-                continue
-            pieces = _split_large_text_sentenceish(
-                paragraph.text,
-                base_offset=paragraph.start_char,
+            paragraph_offset = cursor
+            paragraph_pieces = _split_large_paragraph(
+                paragraph,
+                base_offset=paragraph_offset,
                 max_chars=max_chars,
                 overlap=overlap,
             )
-            for piece_text, piece_start, piece_end in pieces:
-                expanded.append(
-                    _Paragraph(
-                        text=piece_text,
-                        start_char=piece_start,
-                        end_char=piece_end,
-                        heading_path=paragraph.heading_path,
-                    )
-                )
+            for piece_text, start_char, end_char in paragraph_pieces:
+                cleaned_text, out_links = replace_wikilinks_and_collect(piece_text)
+                cleaned_text = cleaned_text.strip()
+                if cleaned_text:
+                    draft_parts.append((cleaned_text, start_char, end_char, out_links))
+            cursor += len(paragraph) + 2
 
-        chunk_ordinal = 0
         current_text = ""
+        current_links: list[dict[str, str]] = []
         current_start = 0
         current_end = 0
-        current_heading: Optional[str] = None
+        local_chunk_index = 0
 
         def flush_current() -> None:
-            nonlocal chunk_ordinal, global_chunk_index, current_text, current_start, current_end, current_heading
+            nonlocal current_text, current_links, current_start, current_end, local_chunk_index, global_chunk_index
             if not current_text:
                 return
             chunks.append(
-                Chunk(
+                ChunkDraft(
                     chunk_index=global_chunk_index,
+                    section_index=section.section_index,
                     start_char=current_start,
                     end_char=current_end,
                     text=current_text,
-                    section_ordinal=section_ordinal,
-                    chunk_ordinal=chunk_ordinal,
-                    heading_path=current_heading,
+                    heading_path=_format_heading_path(section.heading_path),
+                    chunk_anchor=section.anchor,
+                    chunk_title=section.title,
+                    out_links=list(current_links),
                 )
             )
+            local_chunk_index += 1
             global_chunk_index += 1
-            chunk_ordinal += 1
             current_text = ""
+            current_links = []
             current_start = 0
             current_end = 0
-            current_heading = None
 
-        for para in expanded:
-            para_text = para.text
+        for piece_text, start_char, end_char, out_links in draft_parts:
             if not current_text:
-                current_text = para_text
-                current_start = para.start_char
-                current_end = para.end_char
-                current_heading = para.heading_path
+                current_text = piece_text
+                current_start = start_char
+                current_end = end_char
+                current_links = list(out_links)
                 continue
-
-            combined_len = len(current_text) + 2 + len(para_text)
-            if current_heading == para.heading_path and combined_len <= max_chars:
-                current_text = f"{current_text}\n\n{para_text}"
-                current_end = para.end_char
+            combined = f"{current_text}\n\n{piece_text}"
+            if len(combined) <= max_chars:
+                current_text = combined
+                current_end = end_char
+                current_links.extend(out_links)
             else:
                 flush_current()
-                current_text = para_text
-                current_start = para.start_char
-                current_end = para.end_char
-                current_heading = para.heading_path
-
+                current_text = piece_text
+                current_start = start_char
+                current_end = end_char
+                current_links = list(out_links)
         flush_current()
 
     return chunks
 
 
-def chunk_markdown(text: str, max_chars: int, overlap: int) -> List[Chunk]:
-    # Backward-compatible legacy alias: full markdown -> strip frontmatter -> fixed window v1.
-    _, body = split_frontmatter(text)
-    return chunk_markdown_fixed_window_v1(body_text=body, max_chars=max_chars, overlap=overlap)
+def infer_document_title(meta: dict[str, Any], rel_path: str, sections: list[Section]) -> str:
+    explicit = str(meta.get("title") or "").strip()
+    if explicit:
+        return explicit
+    for section in sections:
+        if section.title and section.title != "preamble":
+            return section.title
+    return Path(rel_path).stem

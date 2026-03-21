@@ -1,5 +1,6 @@
 .venv/
 .tmp
+_tmp*
 __py*/
 allowed/
 secret*

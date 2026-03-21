@@ -5,30 +5,28 @@ import heapq
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Optional
 
 from agent.embedder import Embedder
-from agent.embedding_fingerprint import (
-    normalize_vector,
-    preprocess_query_text,
-    unpack_vector_f32_le,
-)
+from agent.embedding_fingerprint import normalize_vector, preprocess_query_text, unpack_vector_f32_le
 from agent.embeddings_db import connect_db as connect_embeddings_db
-from agent.index_db import connect_db as connect_index_db
-from agent.index_db import get_meta as get_index_meta
-from agent.index_db import query_chunks_lexical
+from agent.corpus_db import connect_db as connect_corpus_db
+from agent.corpus_db import get_meta as get_corpus_meta
+from agent.corpus_db import query_chunks_lexical
 
 try:
     import numpy as _np  # type: ignore
-except Exception:  # pragma: no cover - optional dependency
+except Exception:  # pragma: no cover
     _np = None
 
 
 @dataclass(frozen=True)
 class RetrievedChunk:
     chunk_key: str
+    doc_key: str
     rel_path: str
     heading_path: str
+    chunk_anchor: str
+    chunk_title: str
     text: str
     score: float
     method: str
@@ -39,7 +37,7 @@ class RetrievedChunk:
 @dataclass(frozen=True)
 class RetrievalResult:
     query: str
-    chunker_sig: str
+    corpus_contract_sig: str
     embed_model_id: str
     chunk_preprocess_sig: str
     query_preprocess_sig: str
@@ -56,7 +54,7 @@ class RetrievalResult:
 def retrieve(
     query: str,
     *,
-    index_db_path: Path,
+    corpus_db_path: Path,
     embeddings_db_path: Path,
     embedder: Embedder,
     embed_model_id: str,
@@ -82,9 +80,9 @@ def retrieve(
     else:
         fetch_k_used = vector_limit
 
-    with connect_index_db(index_db_path) as index_conn:
-        lexical_rows = [dict(row) for row in query_chunks_lexical(index_conn, query_text=query, limit=lexical_limit)]
-        chunker_sig = get_index_meta(index_conn, "chunker_sig") or ""
+    with connect_corpus_db(corpus_db_path) as corpus_conn:
+        lexical_rows = [dict(row) for row in query_chunks_lexical(corpus_conn, query_text=query, limit=lexical_limit)]
+        corpus_contract_sig = get_corpus_meta(corpus_conn, "corpus_contract_sig") or ""
 
     lexical_ranked: dict[str, float] = {}
     lexical_meta: dict[str, dict[str, str]] = {}
@@ -96,8 +94,11 @@ def retrieve(
         score = 1.0 - ((rank - 1) / lexical_count)
         lexical_ranked[chunk_key] = max(score, lexical_ranked.get(chunk_key, 0.0))
         lexical_meta[chunk_key] = {
+            "doc_key": str(row.get("doc_key") or ""),
             "rel_path": str(row.get("rel_path") or ""),
             "heading_path": str(row.get("heading_path") or ""),
+            "chunk_anchor": str(row.get("chunk_anchor") or ""),
+            "chunk_title": str(row.get("chunk_title") or ""),
             "text": str(row.get("chunk_text") or ""),
         }
 
@@ -110,7 +111,7 @@ def retrieve(
     if query_dim <= 0:
         raise ValueError("Query vector dimension must be > 0")
 
-    scored, scored_count, vector_normalized = _compute_vector_candidates(
+    scored, scored_count, _ = _compute_vector_candidates(
         embeddings_db_path=embeddings_db_path,
         query_vector=query_vector,
         query_dim=query_dim,
@@ -120,17 +121,17 @@ def retrieve(
     )
     prefilter_count = len(scored)
 
-    metadata_rows = (
-        _fetch_chunk_metadata(index_db_path=index_db_path, chunk_keys=[key for _, key in scored])
-        if scored
-        else {}
-    )
+    metadata_rows = _fetch_chunk_metadata(corpus_db_path=corpus_db_path, chunk_keys=[key for _, key in scored]) if scored else {}
     filtered_scored = [(score, key) for score, key in scored if key in metadata_rows]
     orphan_dropped = prefilter_count - len(filtered_scored)
 
     warning_parts: list[str] = []
     if prefix_applied and filtered_scored:
-        allowed = {key for key, row in metadata_rows.items() if row["rel_path"].replace("\\", "/").startswith(prefix)}
+        allowed = {
+            key
+            for key, row in metadata_rows.items()
+            if row["rel_path"].replace("\\", "/").startswith(prefix)
+        }
         filtered_scored = [(score, key) for score, key in filtered_scored if key in allowed]
         if len(filtered_scored) < vector_limit:
             warning_parts.append(
@@ -148,14 +149,14 @@ def retrieve(
         embed_schema_version = int(row[0]) if row is not None else 0
 
     merged = _fuse_candidates(
-        index_db_path=index_db_path,
+        corpus_db_path=corpus_db_path,
         lexical_ranked=lexical_ranked,
         lexical_meta=lexical_meta,
         vector_ranked=vector_ranked,
     )
     return RetrievalResult(
         query=query,
-        chunker_sig=chunker_sig,
+        corpus_contract_sig=corpus_contract_sig,
         embed_model_id=embed_model_id,
         chunk_preprocess_sig=chunk_preprocess_sig,
         query_preprocess_sig=query_preprocess_sig,
@@ -182,10 +183,10 @@ def _compute_vector_candidates(
     fetch_limit = max(1, int(fetch_k))
     scored_heap: list[tuple[float, str, str]] = []
     scored_count = 0
-    vector_normalized = True
+    vectors_normalized = True
 
     q_np = None
-    q_arr: Optional[array] = None
+    q_arr: array | None = None
     q_norm = _l2_norm(query_vector)
     if _np is not None:
         q_np = _np.asarray(query_vector, dtype=_np.float32)
@@ -193,9 +194,8 @@ def _compute_vector_candidates(
         q_arr = array("f", query_vector)
 
     with connect_embeddings_db(embeddings_db_path) as embed_conn:
-        vectors_row = embed_conn.execute("SELECT value FROM meta WHERE key = 'vectors_normalized'").fetchone()
-        vectors_normalized_meta = str(vectors_row["value"]) if vectors_row is not None else "0"
-        vector_normalized = vectors_normalized_meta == "1"
+        row = embed_conn.execute("SELECT value FROM meta WHERE key = 'vectors_normalized'").fetchone()
+        vectors_normalized = str(row["value"]) == "1" if row is not None else True
         rows = embed_conn.execute(
             """
             SELECT chunk_key, vector
@@ -210,14 +210,14 @@ def _compute_vector_candidates(
                 continue
             if q_np is not None and _np is not None:
                 vec_np = _np.frombuffer(blob, dtype=_np.float32)
-                if vector_normalized:
+                if vectors_normalized:
                     score = float(_np.dot(q_np, vec_np))
                 else:
                     denom = float(_np.linalg.norm(vec_np)) * max(q_norm, 1e-12)
                     score = float(_np.dot(q_np, vec_np) / denom) if denom > 0.0 else 0.0
             else:
                 vec_arr = unpack_vector_f32_le(blob)
-                if vector_normalized:
+                if vectors_normalized:
                     score = _dot_array(q_arr, vec_arr)
                 else:
                     denom = _l2_norm_arr(vec_arr) * max(q_norm, 1e-12)
@@ -229,36 +229,45 @@ def _compute_vector_candidates(
             pair = (score, _reverse_chunk_key(chunk_key), chunk_key)
             if len(scored_heap) < fetch_limit:
                 heapq.heappush(scored_heap, pair)
-            else:
-                if pair > scored_heap[0]:
-                    heapq.heapreplace(scored_heap, pair)
-    ranked = sorted([(score, chunk_key) for score, _, chunk_key in scored_heap], key=lambda item: (-item[0], item[1]))
-    return ranked, scored_count, vector_normalized
+            elif pair > scored_heap[0]:
+                heapq.heapreplace(scored_heap, pair)
+
+    ranked = sorted(
+        [(score, chunk_key) for score, _, chunk_key in scored_heap],
+        key=lambda item: (-item[0], item[1]),
+    )
+    return ranked, scored_count, vectors_normalized
 
 
-def _fetch_chunk_metadata(*, index_db_path: Path, chunk_keys: list[str]) -> dict[str, dict[str, str]]:
+def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dict[str, dict[str, str]]:
     unique_keys = sorted({key for key in chunk_keys if key})
     if not unique_keys:
         return {}
     placeholders = ",".join("?" for _ in unique_keys)
-    with connect_index_db(index_db_path) as index_conn:
-        rows = index_conn.execute(
+    with connect_corpus_db(corpus_db_path) as corpus_conn:
+        rows = corpus_conn.execute(
             f"""
             SELECT
                 chunks.chunk_key AS chunk_key,
-                docs.rel_path AS rel_path,
-                COALESCE(chunks.heading_path, '') AS heading_path,
+                chunks.doc_key AS doc_key,
+                documents.rel_path AS rel_path,
+                chunks.heading_path AS heading_path,
+                chunks.chunk_anchor AS chunk_anchor,
+                chunks.chunk_title AS chunk_title,
                 chunks.text AS chunk_text
             FROM chunks
-            INNER JOIN docs ON docs.id = chunks.doc_id
+            INNER JOIN documents ON documents.id = chunks.doc_id
             WHERE chunks.chunk_key IN ({placeholders})
             """,
             unique_keys,
         ).fetchall()
     return {
         str(row["chunk_key"]): {
+            "doc_key": str(row["doc_key"]),
             "rel_path": str(row["rel_path"]),
             "heading_path": str(row["heading_path"]),
+            "chunk_anchor": str(row["chunk_anchor"]),
+            "chunk_title": str(row["chunk_title"]),
             "text": str(row["chunk_text"]),
         }
         for row in rows
@@ -267,13 +276,13 @@ def _fetch_chunk_metadata(*, index_db_path: Path, chunk_keys: list[str]) -> dict
 
 def _fuse_candidates(
     *,
-    index_db_path: Path,
+    corpus_db_path: Path,
     lexical_ranked: dict[str, float],
     lexical_meta: dict[str, dict[str, str]],
     vector_ranked: dict[str, float],
 ) -> list[RetrievedChunk]:
     all_keys = sorted(set(lexical_ranked) | set(vector_ranked))
-    fetched = _fetch_chunk_metadata(index_db_path=index_db_path, chunk_keys=all_keys)
+    fetched = _fetch_chunk_metadata(corpus_db_path=corpus_db_path, chunk_keys=all_keys)
     out: list[RetrievedChunk] = []
     for chunk_key in all_keys:
         lex = lexical_ranked.get(chunk_key, 0.0)
@@ -294,8 +303,11 @@ def _fuse_candidates(
         out.append(
             RetrievedChunk(
                 chunk_key=chunk_key,
+                doc_key=str(meta.get("doc_key") or ""),
                 rel_path=str(meta.get("rel_path") or ""),
                 heading_path=str(meta.get("heading_path") or ""),
+                chunk_anchor=str(meta.get("chunk_anchor") or ""),
+                chunk_title=str(meta.get("chunk_title") or ""),
                 text=str(meta.get("text") or ""),
                 score=merged_score,
                 method=method,
@@ -303,17 +315,11 @@ def _fuse_candidates(
                 vector_score=vec,
             )
         )
-    out.sort(
-        key=lambda item: (
-            0 if item.method == "both" else 1,
-            -item.score,
-            item.chunk_key,
-        )
-    )
+    out.sort(key=lambda item: (0 if item.method == "both" else 1, -item.score, item.chunk_key))
     return out
 
 
-def _dot_array(a: Optional[array], b: array) -> float:
+def _dot_array(a: array | None, b: array) -> float:
     if a is None:
         return 0.0
     total = 0.0
@@ -339,25 +345,4 @@ def _l2_norm_arr(values: array) -> float:
 def _reverse_chunk_key(chunk_key: str) -> str:
     if not chunk_key:
         return ""
-    lowered = chunk_key.lower()
-    if all(ch in "0123456789abcdef" for ch in lowered):
-        complement = {
-            "0": "f",
-            "1": "e",
-            "2": "d",
-            "3": "c",
-            "4": "b",
-            "5": "a",
-            "6": "9",
-            "7": "8",
-            "8": "7",
-            "9": "6",
-            "a": "5",
-            "b": "4",
-            "c": "3",
-            "d": "2",
-            "e": "1",
-            "f": "0",
-        }
-        return "".join(complement[ch] for ch in lowered)
     return bytes(255 - b for b in chunk_key.encode("utf-8", errors="replace")).decode("latin1")

@@ -30,7 +30,7 @@ class TorchEmbedder(Embedder):
     ) -> None:
         self.model_id = str(model_id).strip()
         if not self.model_id:
-            raise ValueError("phase3.embed.model_id must be non-empty")
+            raise ValueError("embeddings.model_id must be non-empty")
 
         self.batch_size = max(1, int(batch_size))
         self.max_length = max(1, int(max_length))
@@ -43,9 +43,9 @@ class TorchEmbedder(Embedder):
         self._local_model_path = ""
 
         if self.pooling != "mean":
-            raise ValueError(f"phase3.embed.torch.pooling must be 'mean', got={self.pooling}")
+            raise ValueError(f"embeddings.torch.pooling must be 'mean', got={self.pooling}")
         if not self.normalize:
-            raise ValueError("phase3.embed.torch.normalize must be true for phase3 invariants")
+            raise ValueError("embeddings.torch.normalize must be true")
 
         model_source = self._resolve_model_source(local_model_path)
         model_root = self._resolve_model_root(local_model_path)
@@ -105,7 +105,7 @@ class TorchEmbedder(Embedder):
         except Exception as exc:
             if self.offline_only:
                 raise RuntimeError(
-                    "Torch model not found locally. Provide phase3.embed.torch.local_model_path "
+                    "Torch model not found locally. Provide embeddings.torch.local_model_path "
                     "or pre-download into cache_dir."
                 ) from exc
             raise
@@ -169,7 +169,7 @@ class TorchEmbedder(Embedder):
         if not p.exists():
             raise RuntimeError(
                 f"Torch local model path does not exist: {p}. "
-                "Provide phase3.embed.torch.local_model_path or pre-download into cache_dir."
+                "Provide embeddings.torch.local_model_path or pre-download into cache_dir."
             )
         return str(p.resolve())
 
@@ -186,15 +186,15 @@ class TorchEmbedder(Embedder):
         if want == "auto":
             return "cuda" if cuda_ok else "cpu"
         if want == "cuda" and not cuda_ok:
-            raise RuntimeError("phase3.embed.torch.device='cuda' but CUDA is not available")
+            raise RuntimeError("embeddings.torch.device='cuda' but CUDA is not available")
         if want not in {"cpu", "cuda"}:
-            raise ValueError(f"phase3.embed.torch.device must be one of auto|cpu|cuda, got={configured}")
+            raise ValueError(f"embeddings.torch.device must be one of auto|cpu|cuda, got={configured}")
         return want
 
     def _resolve_dtype(self, device: str, configured: str) -> str:
         want = str(configured).strip().lower() or "float32"
         if want not in {"float16", "float32"}:
-            raise ValueError(f"phase3.embed.torch.dtype must be float16|float32, got={configured}")
+            raise ValueError(f"embeddings.torch.dtype must be float16|float32, got={configured}")
         if device == "cpu":
             return "float32"
         return want

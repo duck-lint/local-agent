@@ -1,253 +1,150 @@
 # local-agent Operator Quick Reference
 
-This is the short runbook. For full architecture and policy detail, see `README.md`.
+This is the short runbook for the library-first runtime. For architecture and contract details, see [`README.md`](README.md).
 
-## 1) Fast start checklist
+## Fast Start
 
-1. Ollama is up (or reachable remotely). Default `http://127.0.0.1:11434`; precedence is `--ollama-base-url` > `LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default.
-```bash
-curl http://127.0.0.1:11434/api/tags
-```
-   Or for a LAN-hosted Ollama on another machine:
-```bash
-export LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434
-curl "$LOCAL_AGENT_OLLAMA_BASE_URL/api/tags"
-```
-2. Python env exists and deps installed (`requests`, `pyyaml`).
+1. Create a Python environment and install the package.
+
 ```bash
 python -m venv .venv
 .\.venv\Scripts\activate
 pip install -e .
 ```
-On Linux/macOS:
-```bash
-source .venv/bin/activate
-pip install -e .
-```
-For torch-first embeddings:
-```bash
-pip install -e ".[torch-embed]"
-```
-For the optional devcontainer / Codespaces path, open the repo in the included `.devcontainer` and the container will install:
-```bash
-python -m pip install -e ".[dev]"
-```
-3. Repo config exists (always used):
-- Runtime config path is fixed to `local-agent/configs/default.yaml`.
-- Launch directory does not change config selection.
-- No config file is required in `local-agent-workroot`.
-- Optional data root override: `--workroot` (or `LOCAL_AGENT_WORKROOT`, or config `workroot`) with precedence `--workroot` > env > config.
-- Optional Ollama host override precedence: `--ollama-base-url` > `LOCAL_AGENT_OLLAMA_BASE_URL` > `OLLAMA_BASE_URL` > config `ollama_base_url` > built-in default `http://127.0.0.1:11434`.
-- Workroot selection stays independent from the Ollama host selection.
 
-4. Allowlisted roots exist (or `auto_create_allowed_roots: true`):
-- Keep `security.roots_must_be_within_security_root: true` and set `workroot` to the sibling data root (default: `../local-agent-workroot/`).
-- The shipped allowlisted roots are `allowed/` and `runs/` (relative to the active `security_root`/`workroot`).
-- Phase 2 source roots stay under `allowed/corpus/` and `allowed/scratch/`.
+2. Ensure the external workroot exists.
+
 ```text
-allowed/
-  corpus/
-  scratch/
-runs/
+local-agent-workroot/
+  allowed/
+    corpus/
+    scratch/
+  runs/
 ```
 
-## 2) Most-used commands
+3. Check the runtime without network dependencies.
 
-Windows:
 ```bash
-.\.venv\Scripts\python.exe -m agent chat "ping"
-.\.venv\Scripts\python.exe -m agent ask "Summarize the indexed notes about coherence."
-.\.venv\Scripts\python.exe -m agent embed --json
-.\.venv\Scripts\python.exe -m agent memory list --json
-.\.venv\Scripts\python.exe -m agent doctor
+python -m agent doctor --no-ollama
 ```
 
-Cross-platform:
+4. Build corpus and embeddings.
+
+```bash
+python -m agent index --json
+python -m agent embed --json
+```
+
+5. Run a grounded answer.
+
+```bash
+python -m agent ask "Summarize the indexed notes about coherence."
+```
+
+## Most-Used Commands
+
 ```bash
 python -m agent chat "ping"
+python -m agent index --json
+python -m agent query "coherence" --limit 5
+python -m agent embed --json
 python -m agent ask "Summarize the indexed notes about coherence."
-python -m agent embed --json
-python -m agent embed --no-prune --json
+python -m agent doctor --json
+python -m agent doctor --require-grounding --json
 python -m agent memory list --json
-python -m agent doctor
-python -m agent doctor --no-ollama
-python -m agent doctor --require-phase3 --json
-python -m agent doctor --ollama-base-url http://lan-host:11434
-LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
-LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent ask "Summarize the indexed notes about coherence."
-local-agent chat "ping"
 local-agent ask "Summarize the indexed notes about coherence."
-local-agent embed --json
-local-agent embed --no-prune --json
-local-agent memory list --json
-local-agent doctor
-local-agent --workroot ../local-agent-workroot ask "Summarize the indexed notes about coherence."
-LOCAL_AGENT_WORKROOT=../local-agent-workroot LOCAL_AGENT_OLLAMA_BASE_URL=http://192.168.1.25:11434 python -m agent doctor --json
 ```
 
-Codespaces / devcontainer quickstart:
-```bash
-python -m unittest discover -s tests -v
-python -m agent doctor --no-ollama
-export LOCAL_AGENT_OLLAMA_BASE_URL=http://<reachable-host>:11434
-export LOCAL_AGENT_WORKROOT=/workspaces/local-agent-workroot
-```
+## Important Flags
 
-Keep Ollama and workroot external to the repo checkout. In a remote container, that usually means mounting, copying, or otherwise provisioning the workroot explicitly rather than assuming sibling host paths already exist.
+- `--workroot`
+  - override the external runtime data root
+- `--ollama-base-url`
+  - override the Ollama host
+- `doctor --no-ollama`
+  - skip network reachability checks
+- `doctor --require-grounding`
+  - fail unless embeddings and retrieval are ready
+- `ask --fast`
+  - force the faster answer path
+- `ask --big`
+  - force the larger answer model
+- `embed --rebuild`
+  - refresh every embedding row
+- `index --rebuild`
+  - refresh every corpus document and chunk row
 
-`embed` prunes orphan embeddings by default; use `--no-prune` to disable pruning for a run.
+## Config Vocabulary
 
-Optional devcontainer support:
-- `.devcontainer/devcontainer.json` keeps setup minimal, mounts `/workspaces/local-agent-workroot`, and exports `LOCAL_AGENT_WORKROOT`.
-- It does not configure an Ollama host by default.
-- If your environment exposes a reachable Ollama host, set `--ollama-base-url`, `LOCAL_AGENT_OLLAMA_BASE_URL`, or `OLLAMA_BASE_URL` yourself.
+The shipped config uses:
 
-Torch-first phase3 flow:
-```bash
-python -m agent index --rebuild --json
-python -m agent embed --json
-python -m agent doctor --require-phase3 --json
-python -m agent ask "Summarize indexed evidence."
-```
+- `security`
+- `corpus`
+- `embeddings`
+- `retrieval`
+- `grounding`
+- `runs`
+- `memory`
 
-Citation snapshot enforcement (recommended for strict grounding):
-```yaml
-phase3:
-  ask:
-    evidence:
-      top_n: 8
-    citation_validation:
-      enabled: true
-      strict: true
-      require_in_snapshot: true
-      heading_match: prefix
-      normalize_heading: true
-```
-This requires citations to reference chunk keys from the run's retrieved evidence snapshot.
-`heading_match: prefix` keeps strict mode resilient to parent-heading citations (for example citing `H2` when the chunk heading is `H2 > H3`).
-If strict validation trips too often, increase `top_n` moderately (for example `8 -> 12` or `16`).
-Tradeoff: larger `top_n` increases prompt size and evidence payload, though excerpt logging caps still apply.
+If the config still contains older pipeline keys, the runtime rejects it.
 
-Model routing flags:
-```bash
-python -m agent ask --fast "Read allowed/corpus/secret.md and summarize it."
-python -m agent ask --big "Read allowed/corpus/secret.md and give a thorough synthesis."
-python -m agent ask --full "Read allowed/corpus/secret.md and summarize it."
-local-agent ask --fast "Read allowed/corpus/secret.md and summarize it."
-local-agent ask --big "Read allowed/corpus/secret.md and give a thorough synthesis."
-local-agent ask --full "Read allowed/corpus/secret.md and summarize it."
-```
+## Runtime Checks
 
-Clean release zip:
-```bash
-python scripts/make_release_zip.py
-python scripts/make_release_zip.py --dry-run
-python scripts/make_release_zip.py --include-workroot
-```
-`--include-workroot` is curated (top-level boot/docs + sample allowed payload) and excludes `local-agent-workroot/runs/**`.
+`doctor` verifies:
 
-## 3) File path behavior (important)
+- security roots are configured
+- corpus DB exists and matches the active chunk contract
+- embeddings exist and match the active corpus and embedding settings
+- retrieval can return candidates when grounding is required
+- durable memory evidence still points at current chunk keys
 
-- Bare filename (`note.md`):
-  - searched across allowlisted roots
-  - one hit = success
-  - multiple hits = `AMBIGUOUS_PATH`
-- Explicit subpath (`allowed/corpus/secret.md`):
-  - resolved relative to `security_root` (which equals `workroot` when provided)
-  - still must remain inside allowlisted roots
-- Absolute paths are denied by default.
-- Hidden paths (for example `.env`) are denied by default.
-
-## 4) Read this first when a run fails
+## Failure Triage
 
 Open the latest run log:
+
 ```text
 runs/<run_id>/run.json
 ```
 
-Check these fields in order:
+Check these fields first:
+
 1. `ok`
 2. `error_code`, `error_message`
 3. `resolved_config_path`, `config_root`, `package_root`, `workroot`, `security_root`
-4. `raw_first` and `assistant_text`
-5. `tool_trace`
-6. `evidence_required`, `evidence_status`
-7. `raw_second`, `second_pass_retry_reason`
+4. `assistant_text`
+5. `retrieval`
+6. `citations`
 
-## 5) Common error codes and fixes
+## Common Fixes
 
 - `CONFIG_ERROR`
-  - security config invalid (often no valid `allowed_roots`)
-  - fix roots or enable `auto_create_allowed_roots`
-- `PATH_DENIED`
-  - extension/hidden-path/traversal/absolute-path policy denial
-  - use allowlisted path and extension
-- `FILE_NOT_FOUND`
-  - file not found under allowlisted roots
-  - verify path relative to `security_root` and allowlisted roots
-- `AMBIGUOUS_PATH`
-  - duplicate filename across roots
-  - use explicit subpath (`allowed/corpus/...`)
-- `EVIDENCE_NOT_ACQUIRED`
-  - tool call not acquired though required by question
-  - re-run with explicit "Read <file>" phrasing
-- `EVIDENCE_TRUNCATED`
-  - thorough request but evidence remained partial
-  - use `--full` or increase `max_chars_full_read`
-- `SECOND_PASS_FORMAT_VIOLATION`
-  - answer formatting still invalid after retry
-  - simplify prompt or reduce requested output scope
-- `DOCTOR_INDEX_DB_MISSING`
-  - preflight found no index DB at configured path
+  - inspect [`configs/default.yaml`](configs/default.yaml) for invalid or obsolete keys
+- `DOCTOR_CORPUS_DB_MISSING`
   - run `python -m agent index --rebuild --json`
-- `DOCTOR_CHUNKER_SIG_MISMATCH`
-  - preflight found stale chunking fingerprint vs current config
-  - run `python -m agent index --scheme obsidian_v1 --rebuild --json` (or your configured scheme)
-- `DOCTOR_PHASE3_EMBEDDINGS_DB_MISSING`
-  - strict phase3 preflight found no embeddings DB
+- `DOCTOR_EMBEDDINGS_MISSING`
   - run `python -m agent embed --json`
-- `DOCTOR_EMBED_OUTDATED_REQUIRE_PHASE3`
-  - strict phase3 preflight found outdated/mismatched embedding rows
-  - run `python -m agent embed --json` (or `--rebuild --json`)
-- `DOCTOR_EMBED_RUNTIME_FINGERPRINT_MISMATCH`
-  - embedding runtime/provider fingerprint changed from stored meta
+- `DOCTOR_EMBED_PREPROCESS_MISMATCH`
   - run `python -m agent embed --rebuild --json`
+- `DOCTOR_RETRIEVAL_NOT_READY`
+  - rebuild corpus and embeddings, then rerun `doctor --require-grounding`
 - `DOCTOR_MEMORY_DANGLING_EVIDENCE`
-  - durable memory points at chunk keys not present in phase2 index
-  - delete/repair dangling records
-- `DOCTOR_PHASE3_RETRIEVAL_NOT_READY`
-  - phase3 smoke retrieval failed under doctor
-  - verify embed runtime availability, then run `python -m agent embed --rebuild --json` and rerun doctor
-- `PHASE3_EMBED_ERROR` (torch provider)
-  - local model not found and offline-only blocked fallback download
-  - set `phase3.embed.torch.local_model_path` or pre-populate `phase3.embed.torch.cache_dir`
+  - reset or repair durable memory entries that cite removed chunk keys
 
-## 6) Security sanity checks
+## Security Checks
 
 Expected success:
+
 ```bash
-python -m agent ask "Read allowed/corpus/secret.md and summarize it."
-python -m agent ask "Read allowed/corpus/secret.md and list key claims."
+python -m agent ask "Summarize allowed/corpus/note.md."
 ```
 
 Expected denial:
+
 ```bash
-python -m agent ask "Read ../../etc/passwd and summarize it."
-python -m agent ask "Read allowed/corpus/.env and summarize it."
+python -m agent ask "Read ../../etc/passwd."
+python -m agent ask "Read allowed/corpus/.env."
 ```
 
-Expected ambiguity:
-```bash
-python -m agent ask "Read dupe.md and summarize it."
-```
+## Adapter Rule
 
-## 7) One-liner troubleshooting flow
-
-1. If startup fails, fix `CONFIG_ERROR`.
-2. If tool fails, inspect path policy and `tool_trace`.
-3. If evidence fails, check `evidence_status` and truncation fields.
-4. If answer fails, inspect second-pass violations/retry metadata.
-5. Re-run with `--workroot` (if needed), `--fast`, `--big`, or `--full` as needed.
-   For offline preflight, use `python -m agent doctor --no-ollama`.
-   Under `phase3.embed.provider: torch`, retrieval smoke still runs with `--no-ollama`.
-   For remote Ollama, pass `--ollama-base-url` or set `LOCAL_AGENT_OLLAMA_BASE_URL=http://<lan-host>:11434`.
+Business logic belongs in `LocalAgentApp` and its supporting modules. If you add a new surface later, call the core runtime directly instead of re-implementing corpus, retrieval, grounding, or memory behavior in the adapter.

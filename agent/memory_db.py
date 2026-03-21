@@ -8,7 +8,7 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ALLOWED_MEMORY_TYPES = {
     "preference",
     "project_state",
@@ -43,9 +43,13 @@ def init_db(db_path: Path) -> None:
             raise ValueError(
                 f"Memory DB schema version {version} is newer than supported {SCHEMA_VERSION}"
             )
-        if version < 1:
+        if version != SCHEMA_VERSION:
             conn.executescript(
                 """
+                DROP TABLE IF EXISTS memory_evidence;
+                DROP TABLE IF EXISTS memory;
+                DROP TABLE IF EXISTS meta;
+
                 CREATE TABLE IF NOT EXISTS meta (
                     key TEXT PRIMARY KEY,
                     value TEXT NOT NULL
@@ -71,7 +75,7 @@ def init_db(db_path: Path) -> None:
                 CREATE INDEX IF NOT EXISTS idx_memory_evidence_chunk_key ON memory_evidence(chunk_key);
                 """
             )
-            conn.execute("PRAGMA user_version = 1")
+            conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             set_meta(conn, "schema_version", str(SCHEMA_VERSION))
         conn.commit()
 
