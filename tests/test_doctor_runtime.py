@@ -64,6 +64,35 @@ class DoctorRuntimeTests(unittest.TestCase):
         self.assertFalse(report.ok)
         self.assertTrue(any(check.code == "DOCTOR_CORPUS_DB_INVALID" for check in report.checks))
 
+    def test_doctor_fails_when_memory_evidence_points_to_missing_chunks(self) -> None:
+        app = self.fx.build_app()
+        ingest = app.ingest_corpus()
+        self.assertEqual(ingest.errors, [])
+
+        corpus_db_path = app.corpus_db_path()
+        with sqlite3.connect(str(corpus_db_path)) as conn:
+            row = conn.execute("SELECT chunk_key FROM chunks ORDER BY chunk_index LIMIT 1").fetchone()
+        self.assertIsNotNone(row)
+        missing_chunk_key = str(row[0])
+
+        app.add_memory(
+            memory_type="project_state",
+            source="derived_from_evidence",
+            content="This note exists because the corpus chunk does.",
+            chunk_keys=[missing_chunk_key],
+        )
+
+        self.fx.corpus_path("doctor.md").unlink()
+        second_ingest = app.ingest_corpus()
+        self.assertEqual(second_ingest.errors, [])
+        self.assertEqual(second_ingest.docs_pruned, 1)
+
+        report = app.doctor(check_ollama=False, require_grounding=False)
+        self.assertFalse(report.ok)
+        self.assertEqual(report.summary["dangling_memory_evidence"], 1)
+        self.assertTrue(any(check.code == "DOCTOR_EMBEDDINGS_MISSING_WARN" for check in report.checks))
+        self.assertTrue(any(check.code == "DOCTOR_MEMORY_DANGLING_EVIDENCE" for check in report.checks))
+
 
 if __name__ == "__main__":
     unittest.main()
