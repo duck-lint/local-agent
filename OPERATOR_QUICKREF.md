@@ -8,8 +8,17 @@ This is the short runbook for the library-first runtime. For architecture and co
 
 ```bash
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -e .
+```
+
+Activate the environment:
+
+- Linux/macOS: `source .venv/bin/activate`
+- Windows PowerShell: `.\.venv\Scripts\Activate.ps1`
+
+Then install the package:
+
+```bash
+python -m pip install -e .
 ```
 
 2. Ensure the external workroot exists.

@@ -195,15 +195,26 @@ Install:
 
 ```bash
 python -m venv .venv
-.\.venv\Scripts\activate
-pip install -e .
+```
+
+Activate the environment:
+
+- Linux/macOS: `source .venv/bin/activate`
+- Windows PowerShell: `.\.venv\Scripts\Activate.ps1`
+
+Then install the package:
+
+```bash
+python -m pip install -e .
 ```
 
 Optional Torch embedding extras:
 
 ```bash
-pip install -e ".[torch-embed]"
+python -m pip install -e ".[torch-embed]"
 ```
+
+`requirements.txt` is a pinned CUDA-oriented environment snapshot for release or GPU-specific setups, not the default cross-platform development install.
 
 Smoke checks:
 
@@ -243,6 +254,21 @@ The suite covers:
 - CLI adapter behavior
 - doctor/grounding readiness checks
 - tool security behavior
+
+## Packaging
+
+Create a curated release zip from the repo root:
+
+```bash
+python scripts/make_release_zip.py --dry-run
+python scripts/make_release_zip.py --out dist/local-agent-release.zip
+```
+
+When you need to include an external workroot payload, pass it explicitly or rely on `LOCAL_AGENT_WORKROOT`:
+
+```bash
+python scripts/make_release_zip.py --include-workroot --workroot ../local-agent-workroot
+```
 
 ## Security Model
 
