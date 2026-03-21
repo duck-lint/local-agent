@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import argparse
+import os
 from pathlib import Path, PurePosixPath
 import zipfile
+
+WORKROOT_ENV_VAR = "LOCAL_AGENT_WORKROOT"
 
 
 def _repo_roots() -> tuple[Path, Path]:
@@ -44,24 +47,55 @@ def _iter_files(root: Path) -> list[Path]:
     return out
 
 
-def _collect_release_files(include_workroot: bool) -> list[tuple[Path, PurePosixPath]]:
+def _resolve_workroot(
+    workspace_root: Path,
+    workroot: str | Path | None = None,
+    *,
+    env: dict[str, str] | None = None,
+) -> Path:
+    raw = workroot
+    if raw is None:
+        scope = os.environ if env is None else env
+        raw = scope.get(WORKROOT_ENV_VAR)
+    if raw is None:
+        return workspace_root / "local-agent-workroot"
+    return Path(raw).expanduser().resolve()
+
+
+def _collect_release_files(
+    include_workroot: bool,
+    *,
+    workroot: Path | None = None,
+) -> list[tuple[Path, PurePosixPath]]:
     local_agent_root, workspace_root = _repo_roots()
     selected: dict[str, tuple[Path, PurePosixPath]] = {}
 
-    def add_file(path: Path) -> None:
-        try:
-            rel = PurePosixPath(path.resolve().relative_to(workspace_root.resolve()).as_posix())
-        except ValueError:
+    def add_selected_file(path: Path, rel: PurePosixPath) -> None:
+        if not path.exists() or not path.is_file():
             return
         if _is_excluded(rel):
             return
         selected[rel.as_posix()] = (path, rel)
 
-    def add_tree(path: Path, suffix_filter: str | None = None) -> None:
+    def add_repo_file(path: Path) -> None:
+        try:
+            rel = PurePosixPath(path.resolve().relative_to(workspace_root.resolve()).as_posix())
+        except ValueError:
+            return
+        add_selected_file(path, rel)
+
+    def add_workroot_file(path: Path, workroot_root: Path) -> None:
+        try:
+            rel = PurePosixPath(path.resolve().relative_to(workroot_root.resolve()).as_posix())
+        except ValueError:
+            return
+        add_selected_file(path, PurePosixPath("local-agent-workroot") / rel)
+
+    def add_tree(path: Path, suffix_filter: str | None = None, *, add_file_fn=add_repo_file) -> None:
         for p in _iter_files(path):
             if suffix_filter is not None and p.suffix.lower() != suffix_filter:
                 continue
-            add_file(p)
+            add_file_fn(p)
 
     add_tree(local_agent_root / "agent", suffix_filter=".py")
     add_tree(local_agent_root / "configs")
@@ -73,25 +107,37 @@ def _collect_release_files(include_workroot: bool) -> list[tuple[Path, PurePosix
         "repo_marker.py",
         ".gitignore",
     ]:
-        add_file(local_agent_root / rel_file)
+        add_repo_file(local_agent_root / rel_file)
 
     if include_workroot:
-        workroot = workspace_root / "local-agent-workroot"
-        for p in _iter_files(workroot):
-            rel = PurePosixPath(p.resolve().relative_to(workspace_root.resolve()).as_posix())
-            if len(rel.parts) != 2:
+        workroot_root = _resolve_workroot(workspace_root, workroot)
+        for p in _iter_files(workroot_root):
+            rel = PurePosixPath(p.resolve().relative_to(workroot_root.resolve()).as_posix())
+            if len(rel.parts) != 1:
                 continue
             if p.suffix.lower() in {".ps1", ".sh", ".md", ".txt", ".json", ".yaml", ".yml"}:
-                add_file(p)
-        add_file(workroot / "allowed" / ".gitkeep")
-        add_tree(workroot / "allowed" / "sample")
-        add_tree(workroot / "configs")
+                add_workroot_file(p, workroot_root)
+        add_workroot_file(workroot_root / "allowed" / ".gitkeep", workroot_root)
+        add_tree(
+            workroot_root / "allowed" / "sample",
+            add_file_fn=lambda path: add_workroot_file(path, workroot_root),
+        )
+        add_tree(
+            workroot_root / "configs",
+            add_file_fn=lambda path: add_workroot_file(path, workroot_root),
+        )
 
     return [selected[k] for k in sorted(selected)]
 
 
-def make_release_zip(out_path: Path, include_workroot: bool, dry_run: bool) -> int:
-    entries = _collect_release_files(include_workroot=include_workroot)
+def make_release_zip(
+    out_path: Path,
+    include_workroot: bool,
+    dry_run: bool,
+    *,
+    workroot: Path | None = None,
+) -> int:
+    entries = _collect_release_files(include_workroot=include_workroot, workroot=workroot)
     if dry_run:
         for _, rel in entries:
             print(rel.as_posix())
@@ -108,6 +154,7 @@ def make_release_zip(out_path: Path, include_workroot: bool, dry_run: bool) -> i
 
 def main() -> int:
     _, workspace_root = _repo_roots()
+    default_workroot = _resolve_workroot(workspace_root)
     parser = argparse.ArgumentParser(
         description="Create a clean release zip with curated local-agent payload."
     )
@@ -123,6 +170,15 @@ def main() -> int:
         help="Include curated local-agent-workroot payload (excluding runs/).",
     )
     parser.add_argument(
+        "--workroot",
+        type=str,
+        default=str(default_workroot),
+        help=(
+            "Workroot to package when --include-workroot is set. "
+            f"Defaults to {WORKROOT_ENV_VAR} or ../local-agent-workroot."
+        ),
+    )
+    parser.add_argument(
         "--dry-run",
         action="store_true",
         help="Print included paths without writing a zip.",
@@ -132,6 +188,7 @@ def main() -> int:
         out_path=Path(args.out).expanduser().resolve(),
         include_workroot=bool(args.include_workroot),
         dry_run=bool(args.dry_run),
+        workroot=Path(args.workroot).expanduser().resolve(),
     )
 
 
