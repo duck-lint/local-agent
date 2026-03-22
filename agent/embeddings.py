@@ -183,7 +183,7 @@ def sync_embeddings(
     limit: Optional[int] = None,
     dry_run: bool = False,
     prune_orphans: bool = True,
-    embedder_factory: Optional[Callable[[EmbeddingsConfig, str, int], Any]] = None,
+    embedder_factory: Optional[Callable[..., Any]] = None,
 ) -> EmbeddingSyncResult:
     ensure_runtime_dirs(security_root)
     chunks = load_corpus_chunks(corpus_db_path)
@@ -237,7 +237,11 @@ def sync_embeddings(
     factory = embedder_factory
     if factory is None:
         factory = create_embedder
-    embedder = factory(app_config.embeddings, app_config.ollama_base_url, app_config.timeout_s)
+    embedder = factory(
+        embeddings_cfg=app_config.embeddings,
+        base_url=app_config.ollama_base_url,
+        timeout_s=app_config.timeout_s,
+    )
     runtime_fingerprint = str(getattr(embedder, "runtime_fingerprint", lambda: "")() or "")
 
     first = chunks[0]

@@ -62,6 +62,25 @@ class RuntimeAppTests(unittest.TestCase):
         self.assertIn(chunk.chunk_key, grounded.text)
         self.assertTrue((grounded.run_dir / "run.json").exists())
 
+    def test_sync_embeddings_accepts_keyword_only_embedder_factory(self) -> None:
+        app = self.fx.build_app()
+        ingest = app.ingest_corpus()
+        self.assertEqual(ingest.errors, [])
+
+        def keyword_only_factory(*, embeddings_cfg, base_url: str, timeout_s: int):
+            _ = embeddings_cfg, base_url, timeout_s
+            return dummy_embedder_factory(None, "", 0)
+
+        embed = sync_embeddings(
+            app_config=app.config,
+            security_root=app.roots.security_root,
+            corpus_db_path=app.corpus_db_path(),
+            embedder_factory=keyword_only_factory,
+        )
+
+        self.assertEqual(embed.errors, [])
+        self.assertEqual(embed.embedded_written, 1)
+
     def test_export_memory_writes_json_under_security_root(self) -> None:
         app = self.fx.build_app()
         app.add_memory(
