@@ -202,6 +202,54 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertTrue(signals_available)
         self.assertEqual(reranked[0].chunk_key, "journal-chunk")
 
+    def test_bounded_rerank_falls_back_to_source_date_when_entry_date_absent(self) -> None:
+        # Recency policy (metadata_v1): source_date is the explicit fallback when
+        # entry_date is absent or empty. No filesystem mtime is consulted.
+        candidates = [
+            self._make_candidate(chunk_key="old-chunk", doc_key="old-doc", rel_path="old.md"),
+            self._make_candidate(chunk_key="new-chunk", doc_key="new-doc", rel_path="new.md"),
+        ]
+        chunk_meta = {
+            "old-chunk": {"doc_type": "note", "entry_date": "", "source_date": "2026-03-10"},
+            "new-chunk": {"doc_type": "note", "entry_date": "", "source_date": "2026-03-22"},
+        }
+
+        reranked, applied, intent, signals_available = _apply_bounded_rerank(
+            query="most recent",
+            candidates=candidates,
+            chunk_meta=chunk_meta,
+        )
+
+        self.assertTrue(signals_available)
+        self.assertEqual(intent, "recent")
+        # Newer source_date wins when entry_date is absent
+        self.assertEqual(reranked[0].chunk_key, "new-chunk")
+
+    def test_bounded_rerank_entry_date_preferred_over_source_date_for_recency(self) -> None:
+        # Recency policy (metadata_v1): entry_date is the primary date signal and wins
+        # over source_date when both are present.
+        candidates = [
+            self._make_candidate(chunk_key="chunk-a", doc_key="doc-a", rel_path="a.md"),
+            self._make_candidate(chunk_key="chunk-b", doc_key="doc-b", rel_path="b.md"),
+        ]
+        # chunk-a has an older entry_date but newer source_date — entry_date should govern
+        # chunk-b has a newer entry_date but older source_date — entry_date should govern
+        chunk_meta = {
+            "chunk-a": {"doc_type": "note", "entry_date": "2026-03-10", "source_date": "2026-03-22"},
+            "chunk-b": {"doc_type": "note", "entry_date": "2026-03-20", "source_date": "2026-03-01"},
+        }
+
+        reranked, applied, intent, signals_available = _apply_bounded_rerank(
+            query="most recent",
+            candidates=candidates,
+            chunk_meta=chunk_meta,
+        )
+
+        self.assertTrue(signals_available)
+        self.assertEqual(intent, "recent")
+        # entry_date governs; chunk-b has newer entry_date (2026-03-20) so it comes first
+        self.assertEqual(reranked[0].chunk_key, "chunk-b")
+
     def test_bounded_rerank_does_not_change_results_without_supported_intent(self) -> None:
         candidates = [
             self._make_candidate(chunk_key="knowledge-chunk", doc_key="knowledge-doc", rel_path="knowledge.md"),

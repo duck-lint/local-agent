@@ -237,6 +237,103 @@ class CorpusContractTests(unittest.TestCase):
         self.assertTrue(third_content_keys)
         self.assertNotEqual(third_content_keys, first_content_keys)
 
+    def test_metadata_projection_fields_are_exactly_declared(self) -> None:
+        # Contract: metadata_v1 projects title, doc_type, entry_date, source_date, and
+        # aliases/tags only when non-empty. No other frontmatter fields appear in the
+        # metadata chunk text.
+        self.fx.write_corpus_note(
+            "projection-check.md",
+            "---\n"
+            "uuid: projection-doc\n"
+            "title: Projection Check\n"
+            "aliases:\n"
+            "  - proj-alias\n"
+            "tags:\n"
+            "  - proj-tag\n"
+            "doc_type: knowledge\n"
+            "sensitivity: internal\n"
+            "journal_entry_date: 2026-03-15\n"
+            "note_creation_date: 2026-03-05\n"
+            "---\n",
+        )
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+        self.assertEqual(result.errors, [])
+
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            row = conn.execute(
+                """
+                SELECT text
+                FROM chunks
+                INNER JOIN documents ON documents.id = chunks.doc_id
+                WHERE documents.rel_path = 'projection-check.md'
+                  AND chunks.chunk_kind = 'metadata'
+                """
+            ).fetchone()
+        self.assertIsNotNone(row)
+        text = str(row["text"])
+
+        # Declared projected fields must appear
+        self.assertIn("title: Projection Check", text)
+        self.assertIn("aliases: proj-alias", text)
+        self.assertIn("tags: proj-tag", text)
+        self.assertIn("doc_type: knowledge", text)
+        self.assertIn("entry_date: 2026-03-15", text)
+        self.assertIn("source_date: 2026-03-05", text)
+
+        # Non-projected frontmatter fields must NOT appear in the metadata chunk text
+        self.assertNotIn("sensitivity", text)
+        self.assertNotIn("uuid", text)
+        self.assertNotIn("note_creation_date", text)
+        self.assertNotIn("journal_entry_date", text)
+
+    def test_metadata_projection_omits_absent_optional_fields(self) -> None:
+        # Contract: entry_date and source_date are omitted from metadata chunk text when absent;
+        # aliases and tags are omitted when empty.
+        self.fx.write_corpus_note(
+            "minimal-projection.md",
+            "---\n"
+            "uuid: minimal-doc\n"
+            "title: Minimal\n"
+            "doc_type: note\n"
+            "---\n",
+        )
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+        self.assertEqual(result.errors, [])
+
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            row = conn.execute(
+                """
+                SELECT text
+                FROM chunks
+                INNER JOIN documents ON documents.id = chunks.doc_id
+                WHERE documents.rel_path = 'minimal-projection.md'
+                  AND chunks.chunk_kind = 'metadata'
+                """
+            ).fetchone()
+        self.assertIsNotNone(row)
+        text = str(row["text"])
+
+        self.assertIn("title: Minimal", text)
+        self.assertIn("doc_type: note", text)
+        self.assertNotIn("entry_date", text)
+        self.assertNotIn("source_date", text)
+        self.assertNotIn("aliases", text)
+        self.assertNotIn("tags", text)
+
     def test_corpus_contract_changes_when_metadata_projection_version_changes(self) -> None:
         original = self.fx.app_config.corpus
         baseline = sync_corpus(

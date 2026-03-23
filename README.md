@@ -77,6 +77,30 @@ The corpus ingester ports the vault-aware logic that matters for retrieval quali
 
 The only supported chunking and embedding-preprocess profile is `obsidian_v1`.
 
+### Metadata Chunk Projection (`metadata_v1`)
+
+Each document produces one metadata chunk (chunk kind `metadata`, heading path `META: frontmatter`, index `-1`) that carries exactly the following fields:
+
+- `title` — always present
+- `aliases` — present only when non-empty
+- `tags` — present only when non-empty
+- `doc_type` — always present
+- `entry_date` — present only when the frontmatter `journal_entry_date` field is set
+- `source_date` — present only when `note_creation_date` or a date in the filename is found
+
+No other frontmatter fields are projected into the metadata chunk text. The full raw frontmatter is stored separately in `frontmatter_json` on the document record and is not part of the metadata chunk projection.
+
+The projection policy is versioned as `metadata_v1`. Any change to the projected field set must increment the version; incrementing the version changes the corpus contract signature and forces a corpus rebuild.
+
+### Recency Precedence
+
+For recency-based reranking (`most recent`, `latest`, `newest`, `recent` queries), the date signal used is:
+
+1. `entry_date` — primary signal (from `journal_entry_date` frontmatter field)
+2. `source_date` — explicit fallback when `entry_date` is absent or empty (from `note_creation_date` or filename date pattern)
+
+There is no filesystem modification-time (`mtime`) fallback. The precedence rule is `entry_date > source_date`, and nothing else.
+
 ## Storage
 
 The runtime keeps separate SQLite stores for:

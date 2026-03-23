@@ -362,6 +362,10 @@ def _apply_bounded_rerank(
     candidates: list[RetrievedChunk],
     chunk_meta: dict[str, dict[str, object]],
 ) -> tuple[list[RetrievedChunk], bool, str, bool]:
+    # Recency policy (metadata_v1): entry_date is the primary date signal.
+    # source_date is the explicit fallback when entry_date is absent or empty.
+    # There is no filesystem mtime fallback; only entry_date and source_date are consulted.
+    # Reranking is bounded and reorder-only; candidate generation remains in retrieve().
     intent = _detect_rerank_intent(query)
     if not intent or not candidates:
         return candidates, False, "", False

@@ -220,6 +220,12 @@ def build_metadata_projection(
     entry_date: Optional[str],
     source_date: Optional[str],
 ) -> MetadataProjection:
+    # metadata_v1 projection contract: the text field carries exactly these fields in this order.
+    # title (always), aliases (if non-empty), tags (if non-empty), doc_type (always),
+    # entry_date (if present), source_date (if present).
+    # No other frontmatter fields are projected into the metadata chunk text.
+    # Recency precedence for reranking: entry_date is preferred; source_date is the fallback.
+    # There is no filesystem mtime fallback.
     aliases = parse_string_list_field(meta, "aliases")
     tags = parse_string_list_field(meta, "tags")
     lines = [f"title: {document_title}"]
