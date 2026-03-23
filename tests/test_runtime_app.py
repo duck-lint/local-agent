@@ -4,6 +4,7 @@ import json
 import unittest
 from unittest.mock import patch
 
+from agent import grounding as grounding_module
 from agent.tools import ToolError
 from agent.embeddings import sync_embeddings
 from tests.support import AppFixture, dummy_embedder_factory
@@ -49,18 +50,28 @@ class RuntimeAppTests(unittest.TestCase):
         )
         self.assertEqual(embed.errors, [])
         with patch("agent.app.create_embedder", side_effect=dummy_embedder_factory):
-            retrieval = app.retrieve("alpha evidence")
-            self.assertGreaterEqual(len(retrieval.candidates), 1)
-            chunk = retrieval.candidates[0]
+            seed_retrieval = app.retrieve("alpha evidence")
+            self.assertGreaterEqual(len(seed_retrieval.candidates), 1)
+            chunk = seed_retrieval.candidates[0]
             answer_text = f"alpha evidence lives here. [source: {chunk.rel_path}#{chunk.heading_path} | {chunk.chunk_key}]"
+            grounded_retrieval = {}
+            original_retrieve = grounding_module.retrieve
 
             with patch("agent.grounding.ensure_ollama_up"):
                 with patch("agent.grounding.create_embedder", side_effect=dummy_embedder_factory):
-                    with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
-                        grounded = app.answer_grounded("Where is alpha evidence?")
+                    def capture_grounded_retrieval(*args, **kwargs):
+                        result = original_retrieve(*args, **kwargs)
+                        grounded_retrieval["result"] = result
+                        return result
+
+                    with patch("agent.grounding.retrieve", side_effect=capture_grounded_retrieval):
+                        with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
+                            grounded = app.answer_grounded("Where is alpha evidence?")
 
         self.assertTrue(grounded.ok)
         self.assertIn(chunk.chunk_key, grounded.text)
+        self.assertIn("result", grounded_retrieval)
+        retrieval = grounded_retrieval["result"]
         run_path = grounded.run_dir / "run.json"
         self.assertTrue(run_path.exists())
         persisted = json.loads(run_path.read_text(encoding="utf-8"))
