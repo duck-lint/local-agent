@@ -108,6 +108,14 @@ def run_doctor(
             docs_total = int(corpus_conn.execute("SELECT COUNT(*) AS c FROM documents").fetchone()["c"])
             chunks_total = int(corpus_conn.execute("SELECT COUNT(*) AS c FROM chunks").fetchone()["c"])
             stored_contract_sig = get_corpus_meta(corpus_conn, "corpus_contract_sig") or ""
+            chunk_kind_rows = corpus_conn.execute(
+                "SELECT chunk_kind, COUNT(*) AS c FROM chunks GROUP BY chunk_kind ORDER BY chunk_kind"
+            ).fetchall()
+            chunk_search_rows = int(corpus_conn.execute("SELECT COUNT(*) AS c FROM chunk_search").fetchone()["c"])
+            stored_metadata_projection_version = get_corpus_meta(corpus_conn, "metadata_projection_version") or ""
+            stored_lexical_projection_version = get_corpus_meta(corpus_conn, "lexical_projection_version") or ""
+            lexical_backend_mode = get_corpus_meta(corpus_conn, "lexical_backend_mode") or "projection_substring"
+            lexical_backend_warning = get_corpus_meta(corpus_conn, "lexical_backend_warning") or ""
     except sqlite3.DatabaseError as exc:
         summary["corpus_db_error"] = str(exc)
         checks.append(
@@ -121,6 +129,12 @@ def run_doctor(
     summary["documents_total"] = docs_total
     summary["chunks_total"] = chunks_total
     summary["corpus_contract_sig"] = stored_contract_sig
+    summary["chunk_kind_counts"] = {str(row["chunk_kind"]): int(row["c"]) for row in chunk_kind_rows}
+    summary["metadata_projection_version"] = stored_metadata_projection_version
+    summary["lexical_projection_version"] = stored_lexical_projection_version
+    summary["chunk_search_rows"] = chunk_search_rows
+    summary["lexical_backend_mode"] = lexical_backend_mode
+    summary["lexical_backend_warning"] = lexical_backend_warning
     expected_contract_sig = compute_corpus_contract_sig(
         max_chars=app_config.corpus.max_chars,
         overlap=app_config.corpus.overlap,
@@ -145,6 +159,21 @@ def run_doctor(
         )
     else:
         checks.append(_ok("DOCTOR_CORPUS_CONTRACT_OK", "Corpus contract matches current configuration."))
+    if chunk_search_rows != chunks_total:
+        checks.append(
+            _fail(
+                "DOCTOR_LEXICAL_PROJECTION_MISMATCH",
+                f"Lexical projection has {chunk_search_rows} rows for {chunks_total} corpus chunks.",
+                suggested_fix="Run: local-agent index --rebuild --json",
+            )
+        )
+    else:
+        checks.append(_ok("DOCTOR_LEXICAL_PROJECTION_READY", "Lexical projection rows match current corpus chunks."))
+    if lexical_backend_mode == "fts5":
+        checks.append(_ok("DOCTOR_LEXICAL_BACKEND_FTS5", "Lexical backend is using FTS5."))
+    else:
+        message = lexical_backend_warning or "Lexical backend is using projection substring fallback."
+        checks.append(_ok("DOCTOR_LEXICAL_BACKEND_FALLBACK", message))
 
     chunks = load_corpus_chunks(corpus_db_path)
     chunk_keys = [chunk["chunk_key"] for chunk in chunks]

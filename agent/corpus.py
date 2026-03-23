@@ -8,9 +8,20 @@ from typing import Optional
 
 from agent.app_types import ChunkRecord, CorpusConfig, CorpusSyncResult, DocumentRecord, SourceConfig
 from agent.chunking import (
+    CHUNK_KIND_CONTENT,
+    CHUNK_KIND_METADATA,
+    LEXICAL_PROJECTION_VERSION,
+    METADATA_CHUNK_ANCHOR,
+    METADATA_CHUNK_INDEX,
+    METADATA_CHUNK_TITLE,
+    METADATA_HEADING_PATH,
+    METADATA_PROJECTION_VERSION,
+    METADATA_SECTION_INDEX,
     build_markdown_chunks,
+    build_metadata_projection,
     canonicalize_source_uri,
     infer_document_title,
+    normalize_doc_type,
     parse_date_field,
     parse_source_date,
     parse_yaml_frontmatter,
@@ -28,6 +39,7 @@ from agent.corpus_db import (
     init_db,
     prune_docs_not_in_source,
     query_chunks_lexical,
+    rebuild_chunk_search,
     replace_document_chunks,
     set_meta,
     upsert_document,
@@ -44,9 +56,20 @@ from agent.tools import (
 def compute_corpus_contract_sig(*, max_chars: int, overlap: int) -> str:
     payload = {
         "chunk_profile": "obsidian_v1",
-        "chunk_impl": "vault_corpus_v1",
+        "chunk_impl": "vault_corpus_v2_metadata",
         "max_chars": int(max_chars),
         "overlap": int(overlap),
+        "metadata_chunk_policy": {
+            "enabled": True,
+            "kind": CHUNK_KIND_METADATA,
+            "heading_path": METADATA_HEADING_PATH,
+            "anchor": METADATA_CHUNK_ANCHOR,
+            "title": METADATA_CHUNK_TITLE,
+            "chunk_index": METADATA_CHUNK_INDEX,
+            "section_index": METADATA_SECTION_INDEX,
+            "projection_version": METADATA_PROJECTION_VERSION,
+        },
+        "lexical_projection_version": LEXICAL_PROJECTION_VERSION,
     }
     encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
     return hashlib.sha256(encoded.encode("utf-8", errors="replace")).hexdigest()[:32]
@@ -128,24 +151,56 @@ def _document_record_from_file(
     sections = split_into_sections(body)
     title = infer_document_title(frontmatter, rel_path, sections)
     folder = Path(rel_path).parts[0] if Path(rel_path).parts else ""
-    doc_type = str(frontmatter.get("doc_type") or "").strip() or (folder.lower() if folder else "note")
-    sensitivity = str(frontmatter.get("sensitivity") or "").strip() or "private"
     entry_date = parse_date_field(frontmatter, "journal_entry_date")
     source_date = parse_source_date(frontmatter, Path(rel_path).name)
+    doc_type = normalize_doc_type(frontmatter, folder=folder, entry_date=entry_date)
+    sensitivity = str(frontmatter.get("sensitivity") or "").strip() or "private"
     stat = safe_path.stat()
 
-    chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
+    metadata_projection = build_metadata_projection(
+        meta=frontmatter,
+        document_title=title,
+        doc_type=doc_type,
+        entry_date=entry_date,
+        source_date=source_date,
+    )
+    body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
     chunk_records: list[ChunkRecord] = []
-    for draft in chunks:
+    chunk_records.append(
+        ChunkRecord(
+            chunk_key=stable_chunk_key(
+                source_uri=source_uri,
+                chunk_kind=CHUNK_KIND_METADATA,
+                heading_path=[METADATA_HEADING_PATH],
+                section_index=METADATA_SECTION_INDEX,
+                chunk_index=METADATA_CHUNK_INDEX,
+            ),
+            doc_key=doc_key,
+            chunk_kind=CHUNK_KIND_METADATA,
+            chunk_index=METADATA_CHUNK_INDEX,
+            section_index=METADATA_SECTION_INDEX,
+            heading_path=METADATA_HEADING_PATH,
+            chunk_anchor=METADATA_CHUNK_ANCHOR,
+            chunk_title=METADATA_CHUNK_TITLE,
+            text=metadata_projection.text,
+            chunk_hash=sha256_text(metadata_projection.text),
+            start_char=0,
+            end_char=0,
+            out_links=[],
+        )
+    )
+    for draft in body_chunks:
         chunk_records.append(
             ChunkRecord(
                 chunk_key=stable_chunk_key(
                     source_uri=source_uri,
+                    chunk_kind=CHUNK_KIND_CONTENT,
                     heading_path=draft.heading_path.split(" > ") if draft.heading_path else [],
                     section_index=draft.section_index,
                     chunk_index=draft.chunk_index,
                 ),
                 doc_key=doc_key,
+                chunk_kind=CHUNK_KIND_CONTENT,
                 chunk_index=draft.chunk_index,
                 section_index=draft.section_index,
                 heading_path=draft.heading_path,
@@ -212,6 +267,8 @@ def sync_corpus(
         force_refresh_all = bool(force_rebuild or stored_sig != contract_sig)
         set_meta(conn, "corpus_contract_sig", contract_sig)
         set_meta(conn, "chunk_profile", "obsidian_v1")
+        set_meta(conn, "metadata_projection_version", METADATA_PROJECTION_VERSION)
+        set_meta(conn, "lexical_projection_version", LEXICAL_PROJECTION_VERSION)
 
         for source in source_specs:
             source_root = _resolve_source_root(source.root, security_root.resolve())
@@ -262,14 +319,6 @@ def sync_corpus(
                 if not needs_reingest:
                     needs_reingest = _document_requires_reingest(conn, doc_id=doc_id)
 
-                if not chunks:
-                    try:
-                        conn.execute("DELETE FROM documents WHERE id = ?", (doc_id,))
-                        docs_pruned += 1
-                    except Exception as exc:
-                        errors.append(f"{source.name}:{rel_path}: failed to prune empty document: {exc}")
-                    continue
-
                 if needs_reingest:
                     try:
                         written = replace_document_chunks(conn, doc_id=doc_id, chunks=chunks)
@@ -289,6 +338,10 @@ def sync_corpus(
             except Exception as exc:
                 errors.append(f"source '{source.name}': failed to prune removed documents: {exc}")
 
+        try:
+            rebuild_chunk_search(conn)
+        except Exception as exc:
+            errors.append(f"lexical projection rebuild failed: {exc}")
         conn.commit()
         total_docs = count_docs(conn)
         total_chunks = count_chunks(conn)
@@ -317,4 +370,4 @@ def lexical_query(
     init_db(db_path)
     with connect_db(db_path) as conn:
         rows = query_chunks_lexical(conn, query_text=query_text, limit=limit)
-    return [dict(row) for row in rows]
+    return list(rows)

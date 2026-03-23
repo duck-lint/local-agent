@@ -152,6 +152,7 @@ class DocumentRecord:
 class ChunkRecord:
     chunk_key: str
     doc_key: str
+    chunk_kind: str
     chunk_index: int
     section_index: int
     heading_path: str

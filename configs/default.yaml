@@ -65,13 +65,13 @@ embeddings:
     trust_remote_code: false
     offline_only: true
 retrieval:
-  lexical_k: 20
-  vector_k: 20
-  vector_fetch_k: 40
+  lexical_k: 40
+  vector_k: 40
+  vector_fetch_k: 60
   rel_path_prefix: ""
   fusion: "simple_union"
 grounding:
-  evidence_top_n: 8
+  evidence_top_n: 15
   citation_validation:
     enabled: true
     strict: false

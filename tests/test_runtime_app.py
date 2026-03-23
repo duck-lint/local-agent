@@ -79,7 +79,7 @@ class RuntimeAppTests(unittest.TestCase):
         )
 
         self.assertEqual(embed.errors, [])
-        self.assertEqual(embed.embedded_written, 1)
+        self.assertEqual(embed.embedded_written, 2)
 
     def test_export_memory_writes_json_under_security_root(self) -> None:
         app = self.fx.build_app()

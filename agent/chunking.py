@@ -11,6 +11,16 @@ from typing import Any, Optional
 WIKILINK_RE = re.compile(r"\[\[([^\]|]+)(\|([^\]]+))?\]\]")
 HEADING_RE = re.compile(r"^\s{0,3}(#{1,6})\s+(.*)$")
 
+CHUNK_KIND_CONTENT = "content"
+CHUNK_KIND_METADATA = "metadata"
+METADATA_HEADING_PATH = "META: frontmatter"
+METADATA_CHUNK_ANCHOR = "frontmatter"
+METADATA_CHUNK_TITLE = "frontmatter"
+METADATA_CHUNK_INDEX = -1
+METADATA_SECTION_INDEX = -1
+METADATA_PROJECTION_VERSION = "metadata_v1"
+LEXICAL_PROJECTION_VERSION = "lexical_v1"
+
 
 @dataclass(frozen=True)
 class ChunkDraft:
@@ -33,6 +43,17 @@ class Section:
     heading_path: list[str]
     text: str
     start_char: int
+
+
+@dataclass(frozen=True)
+class MetadataProjection:
+    document_title: str
+    aliases: list[str]
+    tags: list[str]
+    doc_type: str
+    entry_date: Optional[str]
+    source_date: Optional[str]
+    text: str
 
 
 def sha256_text(value: str) -> str:
@@ -76,13 +97,15 @@ def canonicalize_heading_path(heading_path: Any) -> list[str]:
 def stable_chunk_key(
     *,
     source_uri: str,
+    chunk_kind: str,
     heading_path: list[str],
     section_index: int,
     chunk_index: int,
 ) -> str:
     canonical_source = canonicalize_source_uri(source_uri)
     canonical_heading = " > ".join(canonicalize_heading_path(heading_path))
-    return sha256_text(f"{canonical_source}|{canonical_heading}|{section_index}|{chunk_index}")[:32]
+    kind = str(chunk_kind or CHUNK_KIND_CONTENT).strip().lower() or CHUNK_KIND_CONTENT
+    return sha256_text(f"{canonical_source}|{kind}|{canonical_heading}|{section_index}|{chunk_index}")[:32]
 
 
 def split_frontmatter(text: str) -> tuple[str, str]:
@@ -144,6 +167,80 @@ def parse_source_date(meta: dict[str, Any], filename: str) -> Optional[str]:
     if match:
         return match.group(1)
     return None
+
+
+def parse_string_list_field(meta: dict[str, Any], key: str) -> list[str]:
+    raw = meta.get(key)
+    if raw is None:
+        return []
+    if isinstance(raw, list):
+        items = raw
+    else:
+        items = [raw]
+    seen: set[str] = set()
+    out: list[str] = []
+    for item in items:
+        text = str(item or "").strip()
+        if not text:
+            continue
+        if text in seen:
+            continue
+        seen.add(text)
+        out.append(text)
+    return out
+
+
+def normalize_doc_type(
+    meta: dict[str, Any],
+    *,
+    folder: str,
+    entry_date: Optional[str],
+) -> str:
+    explicit = str(meta.get("doc_type") or "").strip().lower()
+    if explicit:
+        return explicit
+    note_type = str(meta.get("note_type") or "").strip().lower()
+    if note_type:
+        if note_type in {"journal", "journal_entry", "journal-entry"}:
+            return "journal"
+        return note_type
+    note_status = str(meta.get("note_status") or "").strip().lower()
+    if note_status in {"journal", "journal_entry", "journal-entry"}:
+        return "journal"
+    if entry_date:
+        return "journal"
+    return folder.lower() if folder else "note"
+
+
+def build_metadata_projection(
+    *,
+    meta: dict[str, Any],
+    document_title: str,
+    doc_type: str,
+    entry_date: Optional[str],
+    source_date: Optional[str],
+) -> MetadataProjection:
+    aliases = parse_string_list_field(meta, "aliases")
+    tags = parse_string_list_field(meta, "tags")
+    lines = [f"title: {document_title}"]
+    if aliases:
+        lines.append(f"aliases: {', '.join(aliases)}")
+    if tags:
+        lines.append(f"tags: {', '.join(tags)}")
+    lines.append(f"doc_type: {doc_type}")
+    if entry_date:
+        lines.append(f"entry_date: {entry_date}")
+    if source_date:
+        lines.append(f"source_date: {source_date}")
+    return MetadataProjection(
+        document_title=document_title,
+        aliases=aliases,
+        tags=tags,
+        doc_type=doc_type,
+        entry_date=entry_date,
+        source_date=source_date,
+        text="\n".join(lines).strip() + "\n",
+    )
 
 
 def normalize_markdown_light(markdown: str) -> str:

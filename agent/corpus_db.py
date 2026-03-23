@@ -1,15 +1,16 @@
 from __future__ import annotations
 
 import json
+import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import Iterable, Optional
 
 from agent.app_types import ChunkRecord, DocumentRecord
+from agent.chunking import CHUNK_KIND_METADATA, LEXICAL_PROJECTION_VERSION, parse_string_list_field
 
-
-SCHEMA_VERSION = 4
+SCHEMA_VERSION = 5
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -31,6 +32,8 @@ def connect_db(db_path: Path) -> sqlite3.Connection:
 def _drop_existing_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(
         """
+        DROP TABLE IF EXISTS chunk_search_fts;
+        DROP TABLE IF EXISTS chunk_search;
         DROP TABLE IF EXISTS chunks;
         DROP TABLE IF EXISTS documents;
         DROP TABLE IF EXISTS docs;
@@ -86,6 +89,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
             chunk_key TEXT NOT NULL UNIQUE,
             doc_key TEXT NOT NULL,
+            chunk_kind TEXT NOT NULL,
             chunk_index INTEGER NOT NULL,
             section_index INTEGER NOT NULL,
             heading_path TEXT NOT NULL,
@@ -100,15 +104,36 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             UNIQUE(doc_id, chunk_index)
         );
 
+        CREATE TABLE chunk_search (
+            id INTEGER PRIMARY KEY,
+            doc_id INTEGER NOT NULL REFERENCES documents(id) ON DELETE CASCADE,
+            chunk_key TEXT NOT NULL UNIQUE,
+            chunk_kind TEXT NOT NULL,
+            rel_path TEXT NOT NULL,
+            body_text TEXT NOT NULL,
+            chunk_title TEXT NOT NULL,
+            heading_path TEXT NOT NULL,
+            document_title TEXT NOT NULL,
+            aliases_text TEXT NOT NULL,
+            tags_text TEXT NOT NULL,
+            doc_type TEXT NOT NULL,
+            entry_date TEXT,
+            source_date TEXT,
+            updated_at REAL NOT NULL
+        );
+
         CREATE INDEX idx_documents_source_id ON documents(source_id);
         CREATE INDEX idx_documents_rel_path ON documents(rel_path);
         CREATE INDEX idx_documents_doc_key ON documents(doc_key);
         CREATE INDEX idx_chunks_doc_id ON chunks(doc_id);
         CREATE INDEX idx_chunks_doc_key ON chunks(doc_key);
+        CREATE INDEX idx_chunks_kind ON chunks(chunk_kind);
         CREATE INDEX idx_chunks_heading_path ON chunks(heading_path);
+        CREATE INDEX idx_chunk_search_doc_id ON chunk_search(doc_id);
+        CREATE INDEX idx_chunk_search_kind ON chunk_search(chunk_kind);
         """
     )
-    conn.execute("PRAGMA user_version = 4")
+    conn.execute("PRAGMA user_version = 5")
     set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
 
@@ -297,14 +322,15 @@ def replace_document_chunks(
         conn.execute(
             """
             INSERT INTO chunks(
-                doc_id, chunk_key, doc_key, chunk_index, section_index, heading_path, chunk_anchor,
+                doc_id, chunk_key, doc_key, chunk_kind, chunk_index, section_index, heading_path, chunk_anchor,
                 chunk_title, text, chunk_hash, start_char, end_char, out_links_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
                 chunk.chunk_key,
                 chunk.doc_key,
+                chunk.chunk_kind,
                 int(chunk.chunk_index),
                 int(chunk.section_index),
                 chunk.heading_path,
@@ -387,47 +413,410 @@ def query_chunks_lexical(
     *,
     query_text: str,
     limit: int = 5,
-) -> list[sqlite3.Row]:
+) -> list[dict[str, object]]:
     safe_limit = max(1, int(limit))
-    return list(
+    raw_query = str(query_text or "").strip()
+    if not raw_query:
+        return []
+
+    fetch_limit = max(50, safe_limit * 10)
+    backend_mode = get_meta(conn, "lexical_backend_mode") or (
+        "fts5" if _table_exists(conn, "chunk_search_fts") else "projection_substring"
+    )
+    backend_warning = get_meta(conn, "lexical_backend_warning") or ""
+    actual_backend = backend_mode
+
+    candidates: list[dict[str, object]] = []
+    if backend_mode == "fts5":
+        fts_query = _build_fts_query(raw_query)
+        if fts_query:
+            try:
+                candidates = _query_chunk_search_fts(conn, fts_query=fts_query, limit=fetch_limit)
+            except sqlite3.DatabaseError:
+                candidates = []
+        if not candidates:
+            actual_backend = "projection_substring"
+            if not backend_warning:
+                backend_warning = "FTS unavailable or yielded no tokenized query; using projection substring fallback."
+            candidates = _query_chunk_search_fallback(conn, query_text=raw_query)
+    else:
+        actual_backend = "projection_substring"
+        candidates = _query_chunk_search_fallback(conn, query_text=raw_query)
+
+    if not candidates:
+        return []
+
+    ranked: list[tuple[tuple[int, int, float, str], dict[str, object]]] = []
+    for row in candidates:
+        exact_rank, exact_field = _exact_match_info(raw_query, row)
+        kind_priority = 0 if exact_field and str(row.get("chunk_kind") or "") == CHUNK_KIND_METADATA else 1
+        backend_score = float(row.get("backend_score") or 0.0)
+        chunk_key = str(row.get("chunk_key") or "")
+        row["lexical_exact_match_field"] = exact_field
+        row["lexical_backend_mode"] = actual_backend
+        row["lexical_backend_warning"] = backend_warning
+        ranked.append(((exact_rank, kind_priority, -backend_score, chunk_key), row))
+
+    ranked.sort(key=lambda item: item[0])
+    selected = [row for _, row in ranked[:safe_limit]]
+    chunk_rows = _fetch_chunk_rows_for_keys(conn, [str(row.get("chunk_key") or "") for row in selected])
+    out: list[dict[str, object]] = []
+    for row in selected:
+        chunk_key = str(row.get("chunk_key") or "")
+        base = chunk_rows.get(chunk_key)
+        if base is None:
+            continue
+        merged = dict(base)
+        merged["lexical_backend_mode"] = row.get("lexical_backend_mode")
+        merged["lexical_backend_warning"] = row.get("lexical_backend_warning")
+        merged["lexical_backend_score"] = row.get("backend_score")
+        merged["lexical_exact_match_field"] = row.get("lexical_exact_match_field")
+        out.append(merged)
+    return out
+
+
+def _table_exists(conn: sqlite3.Connection, table_name: str) -> bool:
+    row = conn.execute(
+        "SELECT 1 FROM sqlite_master WHERE type IN ('table', 'view') AND name = ?",
+        (table_name,),
+    ).fetchone()
+    return row is not None
+
+
+def _ensure_chunk_search_fts(conn: sqlite3.Connection) -> bool:
+    try:
         conn.execute(
             """
-            SELECT
-                chunks.id AS chunk_id,
-                chunks.chunk_key AS chunk_key,
-                chunks.chunk_index AS chunk_index,
-                chunks.section_index AS section_index,
-                chunks.heading_path AS heading_path,
-                chunks.chunk_anchor AS chunk_anchor,
-                chunks.chunk_title AS chunk_title,
-                chunks.text AS chunk_text,
-                chunks.chunk_hash AS chunk_hash,
-                documents.doc_key AS doc_key,
-                documents.rel_path AS rel_path,
-                documents.source_uri AS source_uri,
-                documents.title AS document_title,
-                documents.folder AS folder,
-                documents.doc_type AS doc_type,
-                documents.sensitivity AS sensitivity,
-                documents.entry_date AS entry_date,
-                documents.source_date AS source_date,
-                documents.frontmatter_json AS frontmatter_json,
-                sources.name AS source_name,
-                sources.kind AS source_kind
-            FROM chunks
-            INNER JOIN documents ON documents.id = chunks.doc_id
-            INNER JOIN sources ON sources.id = documents.source_id
-            WHERE instr(lower(chunks.text), lower(?)) > 0
-            ORDER BY
-                instr(lower(chunks.text), lower(?)) ASC,
-                length(chunks.text) ASC,
-                documents.id ASC,
-                chunks.chunk_index ASC
-            LIMIT ?
-            """,
-            (query_text, query_text, safe_limit),
+            CREATE VIRTUAL TABLE IF NOT EXISTS chunk_search_fts USING fts5(
+                chunk_key UNINDEXED,
+                body_text,
+                chunk_title,
+                heading_path,
+                rel_path,
+                document_title,
+                aliases_text,
+                tags_text,
+                doc_type
+            )
+            """
         )
+        return True
+    except sqlite3.OperationalError:
+        conn.execute("DROP TABLE IF EXISTS chunk_search_fts")
+        return False
+
+
+def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
+    conn.execute("DELETE FROM chunk_search")
+    use_fts = _ensure_chunk_search_fts(conn)
+    if use_fts:
+        conn.execute("DELETE FROM chunk_search_fts")
+
+    rows = conn.execute(
+        """
+        SELECT
+            chunks.doc_id AS doc_id,
+            chunks.chunk_key AS chunk_key,
+            chunks.chunk_kind AS chunk_kind,
+            chunks.chunk_title AS chunk_title,
+            chunks.heading_path AS heading_path,
+            chunks.text AS chunk_text,
+            documents.rel_path AS rel_path,
+            documents.title AS document_title,
+            documents.doc_type AS doc_type,
+            documents.entry_date AS entry_date,
+            documents.source_date AS source_date,
+            documents.frontmatter_json AS frontmatter_json
+        FROM chunks
+        INNER JOIN documents ON documents.id = chunks.doc_id
+        ORDER BY chunks.doc_id ASC, chunks.chunk_index ASC
+        """
+    ).fetchall()
+
+    ts = time.time()
+    projection_rows: list[tuple[object, ...]] = []
+    fts_rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
+    for row in rows:
+        frontmatter = _load_frontmatter_json(str(row["frontmatter_json"] or ""))
+        aliases = "\n".join(parse_string_list_field(frontmatter, "aliases"))
+        tags = "\n".join(parse_string_list_field(frontmatter, "tags"))
+        chunk_kind = str(row["chunk_kind"] or "")
+        if chunk_kind == CHUNK_KIND_METADATA:
+            body_text = ""
+            chunk_title = ""
+            heading_path = ""
+            document_title = str(row["document_title"] or "")
+            doc_type = str(row["doc_type"] or "")
+            entry_date = str(row["entry_date"] or "") or None
+            source_date = str(row["source_date"] or "") or None
+        else:
+            body_text = str(row["chunk_text"] or "")
+            chunk_title = str(row["chunk_title"] or "")
+            heading_path = str(row["heading_path"] or "")
+            document_title = ""
+            aliases = ""
+            tags = ""
+            doc_type = ""
+            entry_date = None
+            source_date = None
+
+        rel_path = str(row["rel_path"] or "")
+        projection_rows.append(
+            (
+                int(row["doc_id"]),
+                str(row["chunk_key"]),
+                chunk_kind,
+                rel_path,
+                body_text,
+                chunk_title,
+                heading_path,
+                document_title,
+                aliases,
+                tags,
+                doc_type,
+                entry_date,
+                source_date,
+                ts,
+            )
+        )
+        if use_fts:
+            fts_rows.append(
+                (
+                    str(row["chunk_key"]),
+                    body_text,
+                    chunk_title,
+                    heading_path,
+                    rel_path,
+                    document_title,
+                    aliases,
+                    tags,
+                    doc_type,
+                )
+            )
+
+    if projection_rows:
+        conn.executemany(
+            """
+            INSERT INTO chunk_search(
+                doc_id, chunk_key, chunk_kind, rel_path, body_text, chunk_title, heading_path,
+                document_title, aliases_text, tags_text, doc_type, entry_date, source_date, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            projection_rows,
+        )
+    if use_fts and fts_rows:
+        conn.executemany(
+            """
+            INSERT INTO chunk_search_fts(
+                chunk_key, body_text, chunk_title, heading_path, rel_path,
+                document_title, aliases_text, tags_text, doc_type
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            fts_rows,
+        )
+
+    backend_mode = "fts5" if use_fts else "projection_substring"
+    set_meta(conn, "lexical_backend_mode", backend_mode)
+    set_meta(
+        conn,
+        "lexical_backend_warning",
+        "" if use_fts else "FTS5 unavailable; using declared projection substring fallback.",
     )
+    set_meta(conn, "lexical_projection_version", LEXICAL_PROJECTION_VERSION)
+    return backend_mode
+
+
+def _load_frontmatter_json(raw_value: str) -> dict[str, object]:
+    if not raw_value.strip():
+        return {}
+    try:
+        loaded = json.loads(raw_value)
+    except json.JSONDecodeError:
+        return {}
+    return loaded if isinstance(loaded, dict) else {}
+
+
+def _build_fts_query(query_text: str) -> str:
+    tokens = [token for token in re.findall(r"\w+", str(query_text or "").lower()) if token]
+    if not tokens:
+        return ""
+    return " AND ".join(f'"{token}"' for token in tokens)
+
+
+def _query_chunk_search_fts(
+    conn: sqlite3.Connection,
+    *,
+    fts_query: str,
+    limit: int,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT
+            chunk_search.chunk_key AS chunk_key,
+            chunk_search.chunk_kind AS chunk_kind,
+            chunk_search.rel_path AS rel_path,
+            chunk_search.body_text AS body_text,
+            chunk_search.chunk_title AS chunk_title,
+            chunk_search.heading_path AS heading_path,
+            chunk_search.document_title AS document_title,
+            chunk_search.aliases_text AS aliases_text,
+            chunk_search.tags_text AS tags_text,
+            chunk_search.doc_type AS doc_type,
+            chunk_search.entry_date AS entry_date,
+            chunk_search.source_date AS source_date,
+            (0.0 - bm25(chunk_search_fts, 1.0, 2.5, 2.0, 1.5, 5.0, 4.0, 1.0, 2.0)) AS backend_score
+        FROM chunk_search_fts
+        INNER JOIN chunk_search ON chunk_search.chunk_key = chunk_search_fts.chunk_key
+        WHERE chunk_search_fts MATCH ?
+        LIMIT ?
+        """,
+        (fts_query, max(1, int(limit))),
+    ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def _query_chunk_search_fallback(
+    conn: sqlite3.Connection,
+    *,
+    query_text: str,
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        """
+        SELECT
+            chunk_key,
+            chunk_kind,
+            rel_path,
+            body_text,
+            chunk_title,
+            heading_path,
+            document_title,
+            aliases_text,
+            tags_text,
+            doc_type,
+            entry_date,
+            source_date
+        FROM chunk_search
+        WHERE
+            instr(lower(body_text), lower(?)) > 0
+            OR instr(lower(chunk_title), lower(?)) > 0
+            OR instr(lower(heading_path), lower(?)) > 0
+            OR instr(lower(rel_path), lower(?)) > 0
+            OR instr(lower(document_title), lower(?)) > 0
+            OR instr(lower(aliases_text), lower(?)) > 0
+            OR instr(lower(tags_text), lower(?)) > 0
+            OR instr(lower(doc_type), lower(?)) > 0
+        """,
+        (
+            query_text,
+            query_text,
+            query_text,
+            query_text,
+            query_text,
+            query_text,
+            query_text,
+            query_text,
+        ),
+    ).fetchall()
+    out: list[dict[str, object]] = []
+    for row in rows:
+        item = dict(row)
+        item["backend_score"] = _fallback_backend_score(query_text, item)
+        out.append(item)
+    return out
+
+
+def _fallback_backend_score(query_text: str, row: dict[str, object]) -> float:
+    lowered_query = str(query_text or "").strip().lower()
+    if not lowered_query:
+        return 0.0
+    weights = (
+        ("document_title", 6000.0),
+        ("aliases_text", 5500.0),
+        ("chunk_title", 5000.0),
+        ("heading_path", 4500.0),
+        ("rel_path", 4000.0),
+        ("doc_type", 3500.0),
+        ("tags_text", 3000.0),
+        ("body_text", 2500.0),
+    )
+    best = 0.0
+    for field_name, weight in weights:
+        haystack = str(row.get(field_name) or "").lower()
+        pos = haystack.find(lowered_query)
+        if pos < 0:
+            continue
+        score = weight - min(pos, int(weight) - 1)
+        if score > best:
+            best = float(score)
+    return best
+
+
+def _normalize_match_text(value: object, *, path: bool = False) -> str:
+    text = str(value or "").strip().lower()
+    if path:
+        text = text.replace("\\", "/")
+    return " ".join(text.split())
+
+
+def _exact_match_info(query_text: str, row: dict[str, object]) -> tuple[int, str]:
+    query_norm = _normalize_match_text(query_text)
+    if not query_norm:
+        return 99, ""
+    if _normalize_match_text(row.get("document_title")) == query_norm:
+        return 0, "document_title"
+    aliases = [line for line in str(row.get("aliases_text") or "").splitlines() if line.strip()]
+    if any(_normalize_match_text(alias) == query_norm for alias in aliases):
+        return 1, "aliases"
+    if _normalize_match_text(row.get("heading_path")) == query_norm:
+        return 2, "heading_path"
+    if _normalize_match_text(row.get("rel_path"), path=True) == _normalize_match_text(query_text, path=True):
+        return 3, "rel_path"
+    if _normalize_match_text(row.get("doc_type")) == query_norm:
+        return 4, "doc_type"
+    return 99, ""
+
+
+def _fetch_chunk_rows_for_keys(
+    conn: sqlite3.Connection,
+    chunk_keys: list[str],
+) -> dict[str, dict[str, object]]:
+    unique_keys = [key for key in sorted({str(key).strip() for key in chunk_keys if str(key).strip()})]
+    if not unique_keys:
+        return {}
+    placeholders = ",".join("?" for _ in unique_keys)
+    rows = conn.execute(
+        f"""
+        SELECT
+            chunks.id AS chunk_id,
+            chunks.chunk_key AS chunk_key,
+            chunks.doc_key AS doc_key,
+            chunks.chunk_kind AS chunk_kind,
+            chunks.chunk_index AS chunk_index,
+            chunks.section_index AS section_index,
+            chunks.heading_path AS heading_path,
+            chunks.chunk_anchor AS chunk_anchor,
+            chunks.chunk_title AS chunk_title,
+            chunks.text AS chunk_text,
+            chunks.chunk_hash AS chunk_hash,
+            documents.rel_path AS rel_path,
+            documents.source_uri AS source_uri,
+            documents.title AS document_title,
+            documents.folder AS folder,
+            documents.doc_type AS doc_type,
+            documents.sensitivity AS sensitivity,
+            documents.entry_date AS entry_date,
+            documents.source_date AS source_date,
+            documents.frontmatter_json AS frontmatter_json,
+            sources.name AS source_name,
+            sources.kind AS source_kind
+        FROM chunks
+        INNER JOIN documents ON documents.id = chunks.doc_id
+        INNER JOIN sources ON sources.id = documents.source_id
+        WHERE chunks.chunk_key IN ({placeholders})
+        """,
+        unique_keys,
+    ).fetchall()
+    return {str(row["chunk_key"]): dict(row) for row in rows}
 
 
 def count_docs(conn: sqlite3.Connection) -> int:
