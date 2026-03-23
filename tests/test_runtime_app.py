@@ -62,6 +62,46 @@ class RuntimeAppTests(unittest.TestCase):
         self.assertIn(chunk.chunk_key, grounded.text)
         self.assertTrue((grounded.run_dir / "run.json").exists())
 
+    def test_answer_grounded_run_json_contains_retrieval_diagnostics(self) -> None:
+        import json
+
+        app = self.fx.build_app()
+        ingest = app.ingest_corpus()
+        self.assertEqual(ingest.errors, [])
+        embed = sync_embeddings(
+            app_config=app.config,
+            security_root=app.roots.security_root,
+            corpus_db_path=app.corpus_db_path(),
+            embedder_factory=dummy_embedder_factory,
+        )
+        self.assertEqual(embed.errors, [])
+        with patch("agent.app.create_embedder", side_effect=dummy_embedder_factory):
+            retrieval = app.retrieve("alpha evidence")
+            self.assertGreaterEqual(len(retrieval.candidates), 1)
+            chunk = retrieval.candidates[0]
+            answer_text = (
+                f"alpha evidence lives here. "
+                f"[source: {chunk.rel_path}#{chunk.heading_path} | {chunk.chunk_key}]"
+            )
+
+            with patch("agent.grounding.ensure_ollama_up"):
+                with patch("agent.grounding.create_embedder", side_effect=dummy_embedder_factory):
+                    with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
+                        grounded = app.answer_grounded("Where is alpha evidence?")
+
+        run_record = json.loads((grounded.run_dir / "run.json").read_text(encoding="utf-8"))
+        retrieval_record = run_record["retrieval"]
+        self.assertIn("lexical_backend_mode", retrieval_record)
+        self.assertIn("lexical_backend_warning", retrieval_record)
+        self.assertIn("rerank_applied", retrieval_record)
+        self.assertIn("rerank_intent", retrieval_record)
+        self.assertIn("rerank_signals_available", retrieval_record)
+        self.assertIsInstance(retrieval_record["lexical_backend_mode"], str)
+        self.assertIsInstance(retrieval_record["lexical_backend_warning"], str)
+        self.assertIsInstance(retrieval_record["rerank_applied"], bool)
+        self.assertIsInstance(retrieval_record["rerank_intent"], str)
+        self.assertIsInstance(retrieval_record["rerank_signals_available"], bool)
+
     def test_sync_embeddings_accepts_keyword_only_embedder_factory(self) -> None:
         app = self.fx.build_app()
         ingest = app.ingest_corpus()
