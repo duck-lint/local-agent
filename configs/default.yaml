@@ -80,6 +80,10 @@ retrieval:
   rel_path_prefix: ""
   fusion: "simple_union"
 grounding:
+  # Increased from the default (8) to 15 to improve citation robustness.
+  # This may increase prompt size, model latency, and cost. Operators can
+  # tune this value and/or `runs.max_total_evidence_chars` below based on
+  # their performance and cost requirements.
   evidence_top_n: 15
   citation_validation:
     enabled: true
