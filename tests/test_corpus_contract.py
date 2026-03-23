@@ -237,6 +237,108 @@ class CorpusContractTests(unittest.TestCase):
         self.assertTrue(third_content_keys)
         self.assertNotEqual(third_content_keys, first_content_keys)
 
+    def test_duplicate_cross_source_fallback_identity_fails_with_operator_guidance(self) -> None:
+        self.fx.write_corpus_note("shared.md", "# Corpus copy\n")
+        scratch_note = self.fx.workroot / "allowed" / "scratch" / "shared.md"
+        scratch_note.parent.mkdir(parents=True, exist_ok=True)
+        scratch_note.write_text("# Scratch copy\n", encoding="utf-8")
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+
+        self.assertEqual(len(result.errors), 1)
+        error = result.errors[0]
+        self.assertIn("DUPLICATE_DOCUMENT_IDENTITY", error)
+        self.assertIn("scratch:shared.md", error)
+        self.assertIn("corpus:shared.md", error)
+        self.assertIn("fallback doc_key", error)
+        self.assertIn("Cross-source duplicate fallback identities are invalid corpus input", error)
+        self.assertIn("Add explicit uuid frontmatter", error)
+        self.assertIn("rename one note", error)
+
+    def test_explicit_uuids_disambiguate_cross_source_duplicate_rel_paths(self) -> None:
+        self.fx.write_corpus_note("shared.md", "---\nuuid: corpus-shared\n---\n# Corpus copy\n")
+        scratch_note = self.fx.workroot / "allowed" / "scratch" / "shared.md"
+        scratch_note.parent.mkdir(parents=True, exist_ok=True)
+        scratch_note.write_text("---\nuuid: scratch-shared\n---\n# Scratch copy\n", encoding="utf-8")
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+
+        self.assertEqual(result.errors, [])
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            rows = conn.execute(
+                """
+                SELECT sources.name AS source_name, documents.rel_path, documents.doc_key
+                FROM documents
+                INNER JOIN sources ON sources.id = documents.source_id
+                WHERE documents.rel_path = 'shared.md'
+                ORDER BY sources.name
+                """
+            ).fetchall()
+            chunk_keys = conn.execute(
+                """
+                SELECT chunks.chunk_key
+                FROM chunks
+                INNER JOIN documents ON documents.id = chunks.doc_id
+                WHERE documents.rel_path = 'shared.md' AND chunks.chunk_kind = 'metadata'
+                ORDER BY chunks.chunk_key
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(str(row["source_name"]), str(row["rel_path"]), str(row["doc_key"])) for row in rows],
+            [
+                ("corpus", "shared.md", "corpus-shared"),
+                ("scratch", "shared.md", "scratch-shared"),
+            ],
+        )
+        self.assertEqual(len({str(row["chunk_key"]) for row in chunk_keys}), 2)
+
+    def test_explicit_uuid_chunk_keys_do_not_collapse_under_source_uri_canonicalization(self) -> None:
+        self.fx.write_corpus_note("shared.md", "---\nuuid: folder//shared\n---\n# Corpus copy\n")
+        scratch_note = self.fx.workroot / "allowed" / "scratch" / "shared.md"
+        scratch_note.parent.mkdir(parents=True, exist_ok=True)
+        scratch_note.write_text("---\nuuid: folder/shared\n---\n# Scratch copy\n", encoding="utf-8")
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+
+        self.assertEqual(result.errors, [])
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            rows = conn.execute(
+                """
+                SELECT sources.name AS source_name, documents.doc_key, chunks.chunk_key
+                FROM chunks
+                INNER JOIN documents ON documents.id = chunks.doc_id
+                INNER JOIN sources ON sources.id = documents.source_id
+                WHERE documents.rel_path = 'shared.md' AND chunks.chunk_kind = 'metadata'
+                ORDER BY sources.name
+                """
+            ).fetchall()
+        self.assertEqual(
+            [(str(row["source_name"]), str(row["doc_key"])) for row in rows],
+            [
+                ("corpus", "folder//shared"),
+                ("scratch", "folder/shared"),
+            ],
+        )
+        self.assertEqual(len({str(row["chunk_key"]) for row in rows}), 2)
+
     def test_corpus_contract_changes_when_metadata_projection_version_changes(self) -> None:
         original = self.fx.app_config.corpus
         baseline = sync_corpus(

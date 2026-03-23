@@ -211,6 +211,22 @@ def get_document_by_source_rel_path(
     ).fetchone()
 
 
+def get_document_by_doc_key(
+    conn: sqlite3.Connection,
+    *,
+    doc_key: str,
+) -> Optional[sqlite3.Row]:
+    return conn.execute(
+        """
+        SELECT documents.id, documents.doc_key, documents.rel_path, sources.name AS source_name
+        FROM documents
+        INNER JOIN sources ON sources.id = documents.source_id
+        WHERE documents.doc_key = ?
+        """,
+        (doc_key,),
+    ).fetchone()
+
+
 def upsert_document(
     conn: sqlite3.Connection,
     *,
