@@ -67,7 +67,7 @@ embeddings:
 retrieval:
   lexical_k: 20
   vector_k: 20
-  vector_fetch_k: 0
+  vector_fetch_k: 40
   rel_path_prefix: ""
   fusion: "simple_union"
 grounding:
