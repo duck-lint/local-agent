@@ -549,7 +549,7 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
 
     ts = time.time()
     projection_rows: list[tuple[object, ...]] = []
-    fts_rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str]] = []
+    fts_rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str, str]] = []
     for row in rows:
         frontmatter = _load_frontmatter_json(str(row["frontmatter_json"] or ""))
         aliases = "\n".join(parse_string_list_field(frontmatter, "aliases"))
