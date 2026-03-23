@@ -65,6 +65,15 @@ embeddings:
     trust_remote_code: false
     offline_only: true
 retrieval:
+  # NOTE: These defaults are tuned for higher recall and can be expensive:
+  # - Larger `lexical_k` and `vector_k` increase the number of candidates
+  #   to rank and fuse, raising CPU usage and query latency.
+  # - Larger `vector_fetch_k` increases vector scoring work.
+  # If you experience high latency or CPU load, consider lowering these, e.g.:
+  #   lexical_k: 20
+  #   vector_k: 20
+  #   vector_fetch_k: 40
+  # and only use higher values for explicit "high recall" runs or profiles.
   lexical_k: 40
   vector_k: 40
   vector_fetch_k: 60
