@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
@@ -60,7 +61,17 @@ class RuntimeAppTests(unittest.TestCase):
 
         self.assertTrue(grounded.ok)
         self.assertIn(chunk.chunk_key, grounded.text)
-        self.assertTrue((grounded.run_dir / "run.json").exists())
+        run_path = grounded.run_dir / "run.json"
+        self.assertTrue(run_path.exists())
+        persisted = json.loads(run_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["retrieval"]["lexical_backend_mode"], retrieval.lexical_backend_mode)
+        self.assertEqual(persisted["retrieval"]["lexical_backend_warning"], retrieval.lexical_backend_warning)
+        self.assertEqual(persisted["retrieval"]["rerank_applied"], retrieval.rerank_applied)
+        self.assertEqual(persisted["retrieval"]["rerank_intent"], retrieval.rerank_intent)
+        self.assertEqual(
+            persisted["retrieval"]["rerank_signals_available"],
+            retrieval.rerank_signals_available,
+        )
 
     def test_sync_embeddings_accepts_keyword_only_embedder_factory(self) -> None:
         app = self.fx.build_app()
