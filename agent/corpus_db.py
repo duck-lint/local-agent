@@ -8,9 +8,14 @@ from pathlib import Path
 from typing import Iterable, Optional
 
 from agent.app_types import ChunkRecord, DocumentRecord
-from agent.chunking import CHUNK_KIND_METADATA, LEXICAL_PROJECTION_VERSION, parse_string_list_field
+from agent.chunking import (
+    CHUNK_KIND_METADATA,
+    LEXICAL_PROJECTION_VERSION,
+    parse_string_field,
+    parse_string_list_field,
+)
 
-SCHEMA_VERSION = 5
+SCHEMA_VERSION = 6
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -113,12 +118,13 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             body_text TEXT NOT NULL,
             chunk_title TEXT NOT NULL,
             heading_path TEXT NOT NULL,
-            document_title TEXT NOT NULL,
+            canonical_name TEXT NOT NULL,
             aliases_text TEXT NOT NULL,
             tags_text TEXT NOT NULL,
-            doc_type TEXT NOT NULL,
-            entry_date TEXT,
-            source_date TEXT,
+            note_type TEXT NOT NULL,
+            journal_entry_date TEXT,
+            layer TEXT NOT NULL,
+            register TEXT NOT NULL,
             updated_at REAL NOT NULL
         );
 
@@ -133,7 +139,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX idx_chunk_search_kind ON chunk_search(chunk_kind);
         """
     )
-    conn.execute("PRAGMA user_version = 5")
+    conn.execute("PRAGMA user_version = 6")
     set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
 
@@ -467,6 +473,13 @@ def query_chunks_lexical(
         if base is None:
             continue
         merged = dict(base)
+        merged["canonical_name"] = row.get("canonical_name")
+        merged["aliases_text"] = row.get("aliases_text")
+        merged["tags_text"] = row.get("tags_text")
+        merged["note_type"] = row.get("note_type")
+        merged["journal_entry_date"] = row.get("journal_entry_date")
+        merged["layer"] = row.get("layer")
+        merged["register"] = row.get("register")
         merged["lexical_backend_mode"] = row.get("lexical_backend_mode")
         merged["lexical_backend_warning"] = row.get("lexical_backend_warning")
         merged["lexical_backend_score"] = row.get("backend_score")
@@ -493,10 +506,13 @@ def _ensure_chunk_search_fts(conn: sqlite3.Connection) -> bool:
                 chunk_title,
                 heading_path,
                 rel_path,
-                document_title,
+                canonical_name,
                 aliases_text,
                 tags_text,
-                doc_type
+                note_type,
+                journal_entry_date,
+                layer,
+                register
             )
             """
         )
@@ -523,9 +539,7 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
             chunks.text AS chunk_text,
             documents.rel_path AS rel_path,
             documents.title AS document_title,
-            documents.doc_type AS doc_type,
             documents.entry_date AS entry_date,
-            documents.source_date AS source_date,
             documents.frontmatter_json AS frontmatter_json
         FROM chunks
         INNER JOIN documents ON documents.id = chunks.doc_id
@@ -535,7 +549,7 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
 
     ts = time.time()
     projection_rows: list[tuple[object, ...]] = []
-    fts_rows: list[tuple[str, str, str, str, str, str, str, str, str]] = []
+    fts_rows: list[tuple[str, str, str, str, str, str, str, str, str, str, str]] = []
     for row in rows:
         frontmatter = _load_frontmatter_json(str(row["frontmatter_json"] or ""))
         aliases = "\n".join(parse_string_list_field(frontmatter, "aliases"))
@@ -545,20 +559,22 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
             body_text = ""
             chunk_title = ""
             heading_path = ""
-            document_title = str(row["document_title"] or "")
-            doc_type = str(row["doc_type"] or "")
-            entry_date = str(row["entry_date"] or "") or None
-            source_date = str(row["source_date"] or "") or None
+            canonical_name = parse_string_field(frontmatter, "canonical_name") or str(row["document_title"] or "")
+            note_type = parse_string_field(frontmatter, "note_type")
+            journal_entry_date = str(row["entry_date"] or "") or None
+            layer = parse_string_field(frontmatter, "layer")
+            register = parse_string_field(frontmatter, "register")
         else:
             body_text = str(row["chunk_text"] or "")
             chunk_title = str(row["chunk_title"] or "")
             heading_path = str(row["heading_path"] or "")
-            document_title = ""
+            canonical_name = ""
             aliases = ""
             tags = ""
-            doc_type = ""
-            entry_date = None
-            source_date = None
+            note_type = ""
+            journal_entry_date = None
+            layer = ""
+            register = ""
 
         rel_path = str(row["rel_path"] or "")
         projection_rows.append(
@@ -570,12 +586,13 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
                 body_text,
                 chunk_title,
                 heading_path,
-                document_title,
+                canonical_name,
                 aliases,
                 tags,
-                doc_type,
-                entry_date,
-                source_date,
+                note_type,
+                journal_entry_date,
+                layer,
+                register,
                 ts,
             )
         )
@@ -587,10 +604,13 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
                     chunk_title,
                     heading_path,
                     rel_path,
-                    document_title,
+                    canonical_name,
                     aliases,
                     tags,
-                    doc_type,
+                    note_type,
+                    str(journal_entry_date or ""),
+                    layer,
+                    register,
                 )
             )
 
@@ -599,8 +619,8 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
             """
             INSERT INTO chunk_search(
                 doc_id, chunk_key, chunk_kind, rel_path, body_text, chunk_title, heading_path,
-                document_title, aliases_text, tags_text, doc_type, entry_date, source_date, updated_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                canonical_name, aliases_text, tags_text, note_type, journal_entry_date, layer, register, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             projection_rows,
         )
@@ -609,8 +629,8 @@ def rebuild_chunk_search(conn: sqlite3.Connection) -> str:
             """
             INSERT INTO chunk_search_fts(
                 chunk_key, body_text, chunk_title, heading_path, rel_path,
-                document_title, aliases_text, tags_text, doc_type
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                canonical_name, aliases_text, tags_text, note_type, journal_entry_date, layer, register
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             fts_rows,
         )
@@ -658,13 +678,14 @@ def _query_chunk_search_fts(
             chunk_search.body_text AS body_text,
             chunk_search.chunk_title AS chunk_title,
             chunk_search.heading_path AS heading_path,
-            chunk_search.document_title AS document_title,
+            chunk_search.canonical_name AS canonical_name,
             chunk_search.aliases_text AS aliases_text,
             chunk_search.tags_text AS tags_text,
-            chunk_search.doc_type AS doc_type,
-            chunk_search.entry_date AS entry_date,
-            chunk_search.source_date AS source_date,
-            (0.0 - bm25(chunk_search_fts, 1.0, 2.5, 2.0, 1.5, 5.0, 4.0, 1.0, 2.0)) AS backend_score
+            chunk_search.note_type AS note_type,
+            chunk_search.journal_entry_date AS journal_entry_date,
+            chunk_search.layer AS layer,
+            chunk_search.register AS register,
+            (0.0 - bm25(chunk_search_fts, 1.0, 2.5, 2.0, 1.5, 5.0, 4.0, 3.0, 2.0, 1.5, 1.5, 1.5)) AS backend_score
         FROM chunk_search_fts
         INNER JOIN chunk_search ON chunk_search.chunk_key = chunk_search_fts.chunk_key
         WHERE chunk_search_fts MATCH ?
@@ -689,24 +710,31 @@ def _query_chunk_search_fallback(
             body_text,
             chunk_title,
             heading_path,
-            document_title,
+            canonical_name,
             aliases_text,
             tags_text,
-            doc_type,
-            entry_date,
-            source_date
+            note_type,
+            journal_entry_date,
+            layer,
+            register
         FROM chunk_search
         WHERE
             instr(lower(body_text), lower(?)) > 0
             OR instr(lower(chunk_title), lower(?)) > 0
             OR instr(lower(heading_path), lower(?)) > 0
             OR instr(lower(rel_path), lower(?)) > 0
-            OR instr(lower(document_title), lower(?)) > 0
+            OR instr(lower(canonical_name), lower(?)) > 0
             OR instr(lower(aliases_text), lower(?)) > 0
             OR instr(lower(tags_text), lower(?)) > 0
-            OR instr(lower(doc_type), lower(?)) > 0
+            OR instr(lower(note_type), lower(?)) > 0
+            OR instr(lower(journal_entry_date), lower(?)) > 0
+            OR instr(lower(layer), lower(?)) > 0
+            OR instr(lower(register), lower(?)) > 0
         """,
         (
+            query_text,
+            query_text,
+            query_text,
             query_text,
             query_text,
             query_text,
@@ -730,13 +758,16 @@ def _fallback_backend_score(query_text: str, row: dict[str, object]) -> float:
     if not lowered_query:
         return 0.0
     weights = (
-        ("document_title", 6000.0),
+        ("canonical_name", 6000.0),
         ("aliases_text", 5500.0),
+        ("tags_text", 5250.0),
         ("chunk_title", 5000.0),
         ("heading_path", 4500.0),
         ("rel_path", 4000.0),
-        ("doc_type", 3500.0),
-        ("tags_text", 3000.0),
+        ("note_type", 3500.0),
+        ("journal_entry_date", 3250.0),
+        ("layer", 3000.0),
+        ("register", 2750.0),
         ("body_text", 2500.0),
     )
     best = 0.0
@@ -762,17 +793,26 @@ def _exact_match_info(query_text: str, row: dict[str, object]) -> tuple[int, str
     query_norm = _normalize_match_text(query_text)
     if not query_norm:
         return 99, ""
-    if _normalize_match_text(row.get("document_title")) == query_norm:
-        return 0, "document_title"
+    if _normalize_match_text(row.get("canonical_name")) == query_norm:
+        return 0, "canonical_name"
     aliases = [line for line in str(row.get("aliases_text") or "").splitlines() if line.strip()]
     if any(_normalize_match_text(alias) == query_norm for alias in aliases):
         return 1, "aliases"
+    tags = [line for line in str(row.get("tags_text") or "").splitlines() if line.strip()]
+    if any(_normalize_match_text(tag) == query_norm for tag in tags):
+        return 2, "tags"
     if _normalize_match_text(row.get("heading_path")) == query_norm:
-        return 2, "heading_path"
+        return 3, "heading_path"
     if _normalize_match_text(row.get("rel_path"), path=True) == _normalize_match_text(query_text, path=True):
-        return 3, "rel_path"
-    if _normalize_match_text(row.get("doc_type")) == query_norm:
-        return 4, "doc_type"
+        return 4, "rel_path"
+    if _normalize_match_text(row.get("note_type")) == query_norm:
+        return 5, "note_type"
+    if _normalize_match_text(row.get("journal_entry_date")) == query_norm:
+        return 6, "journal_entry_date"
+    if _normalize_match_text(row.get("layer")) == query_norm:
+        return 7, "layer"
+    if _normalize_match_text(row.get("register")) == query_norm:
+        return 8, "register"
     return 99, ""
 
 
@@ -806,6 +846,7 @@ def _fetch_chunk_rows_for_keys(
             documents.sensitivity AS sensitivity,
             documents.entry_date AS entry_date,
             documents.source_date AS source_date,
+            documents.mtime AS mtime,
             documents.frontmatter_json AS frontmatter_json,
             sources.name AS source_name,
             sources.kind AS source_kind

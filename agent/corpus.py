@@ -160,9 +160,7 @@ def _document_record_from_file(
     metadata_projection = build_metadata_projection(
         meta=frontmatter,
         document_title=title,
-        doc_type=doc_type,
         entry_date=entry_date,
-        source_date=source_date,
     )
     body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
     chunk_records: list[ChunkRecord] = []

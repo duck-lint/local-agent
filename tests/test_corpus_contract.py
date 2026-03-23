@@ -16,7 +16,9 @@ class CorpusContractTests(unittest.TestCase):
             "typed.md",
             "---\n"
             "uuid: typed-doc\n"
-            "doc_type: knowledge\n"
+            "note_type: knowledge\n"
+            "layer: ops\n"
+            "register: team\n"
             "sensitivity: internal\n"
             "journal_entry_date: 2026-03-20\n"
             "note_creation_date: 2026-03-10T12:00:00\n"
@@ -73,8 +75,13 @@ class CorpusContractTests(unittest.TestCase):
             self.assertEqual(str(metadata_chunk["heading_path"]), "META: frontmatter")
             self.assertEqual(str(metadata_chunk["chunk_anchor"]), "frontmatter")
             self.assertEqual(str(metadata_chunk["chunk_title"]), "frontmatter")
-            self.assertIn("title: Alpha Section", str(metadata_chunk["text"]))
-            self.assertIn("doc_type: knowledge", str(metadata_chunk["text"]))
+            self.assertIn("note_type: knowledge", str(metadata_chunk["text"]))
+            self.assertIn("journal_entry_date: 2026-03-20", str(metadata_chunk["text"]))
+            self.assertIn("canonical_name: Alpha Section", str(metadata_chunk["text"]))
+            self.assertIn("layer: ops", str(metadata_chunk["text"]))
+            self.assertIn("register: team", str(metadata_chunk["text"]))
+            self.assertNotIn("doc_type:", str(metadata_chunk["text"]))
+            self.assertNotIn("source_date:", str(metadata_chunk["text"]))
 
             content_chunk = conn.execute(
                 """
@@ -152,6 +159,7 @@ class CorpusContractTests(unittest.TestCase):
         self.assertEqual(int(rows[0]["chunk_index"]), -1)
         self.assertEqual(str(rows[0]["heading_path"]), "META: frontmatter")
         self.assertIn("aliases: meta-only", str(rows[0]["text"]))
+        self.assertIn("canonical_name: Metadata Only", str(rows[0]["text"]))
 
     def test_metadata_chunk_is_stable_across_body_transitions(self) -> None:
         app = self.fx.build_app()
@@ -181,7 +189,7 @@ class CorpusContractTests(unittest.TestCase):
             "typed.md",
             "---\n"
             "uuid: typed-doc\n"
-            "doc_type: knowledge\n"
+            "note_type: knowledge\n"
             "aliases:\n"
             "  - typed-alias\n"
             "---\n",
@@ -213,7 +221,7 @@ class CorpusContractTests(unittest.TestCase):
             "typed.md",
             "---\n"
             "uuid: typed-doc\n"
-            "doc_type: knowledge\n"
+            "note_type: knowledge\n"
             "---\n"
             "\n"
             "## Gamma Section\n"
