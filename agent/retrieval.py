@@ -1,8 +1,9 @@
 from __future__ import annotations
 
 from array import array
-from datetime import date
+from datetime import date, datetime, timezone
 import heapq
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -113,9 +114,9 @@ def retrieve(
             "chunk_anchor": str(row.get("chunk_anchor") or ""),
             "chunk_title": str(row.get("chunk_title") or ""),
             "text": str(row.get("chunk_text") or ""),
-            "doc_type": str(row.get("doc_type") or ""),
-            "entry_date": str(row.get("entry_date") or ""),
-            "source_date": str(row.get("source_date") or ""),
+            "note_type": str(row.get("note_type") or ""),
+            "journal_entry_date": str(row.get("journal_entry_date") or ""),
+            "mtime": row.get("mtime") or 0.0,
         }
 
     query_input = preprocess_query_text(query=query, preprocess_name=preprocess_name)
@@ -284,9 +285,9 @@ def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dic
                 chunks.chunk_anchor AS chunk_anchor,
                 chunks.chunk_title AS chunk_title,
                 chunks.text AS chunk_text,
-                documents.doc_type AS doc_type,
                 documents.entry_date AS entry_date,
-                documents.source_date AS source_date
+                documents.mtime AS mtime,
+                documents.frontmatter_json AS frontmatter_json
             FROM chunks
             INNER JOIN documents ON documents.id = chunks.doc_id
             WHERE chunks.chunk_key IN ({placeholders})
@@ -302,9 +303,9 @@ def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dic
             "chunk_anchor": str(row["chunk_anchor"]),
             "chunk_title": str(row["chunk_title"]),
             "text": str(row["chunk_text"]),
-            "doc_type": str(row["doc_type"] or ""),
-            "entry_date": str(row["entry_date"] or ""),
-            "source_date": str(row["source_date"] or ""),
+            "note_type": _note_type_from_frontmatter(str(row["frontmatter_json"] or "")),
+            "journal_entry_date": str(row["entry_date"] or ""),
+            "mtime": row["mtime"] or 0.0,
         }
         for row in rows
     }
@@ -372,11 +373,11 @@ def _apply_bounded_rerank(
     def sort_key(item: RetrievedChunk) -> tuple[int, int, int, int]:
         nonlocal signals_available
         meta = chunk_meta.get(item.chunk_key, {})
-        doc_type = str(meta.get("doc_type") or "").strip().lower()
-        entry_date = _date_ordinal(str(meta.get("entry_date") or ""))
-        source_date = _date_ordinal(str(meta.get("source_date") or ""))
-        best_date = entry_date or source_date
-        class_match = doc_type == "journal"
+        note_type = str(meta.get("note_type") or "").strip().lower()
+        journal_entry_date = _date_ordinal(str(meta.get("journal_entry_date") or ""))
+        mtime_date = _mtime_ordinal(meta.get("mtime"))
+        best_date = journal_entry_date or mtime_date
+        class_match = note_type in {"journal", "journal_entry", "journal-entry"}
 
         if intent in {"journal", "journal_recent"} and class_match:
             signals_available = True
@@ -425,6 +426,32 @@ def _date_ordinal(raw_value: str) -> int:
         return date.fromisoformat(text[:10]).toordinal()
     except ValueError:
         return 0
+
+
+def _mtime_ordinal(raw_value: object) -> int:
+    try:
+        timestamp = float(raw_value or 0.0)
+    except (TypeError, ValueError):
+        return 0
+    if timestamp <= 0.0:
+        return 0
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().toordinal()
+    except (OverflowError, OSError, ValueError):
+        return 0
+
+
+def _note_type_from_frontmatter(raw_value: str) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(loaded, dict):
+        return ""
+    return str(loaded.get("note_type") or "").strip()
 
 
 def _dot_array(a: array | None, b: array) -> float:
