@@ -4,6 +4,7 @@ import sqlite3
 import unittest
 from unittest.mock import patch
 
+from agent.chunking import LEXICAL_PROJECTION_VERSION, METADATA_PROJECTION_VERSION
 from agent.embeddings import sync_embeddings
 from tests.support import AppFixture, dummy_embedder_factory
 
@@ -42,6 +43,18 @@ class DoctorRuntimeTests(unittest.TestCase):
 
         self.assertTrue(report.ok)
         self.assertTrue(any(check.code == "DOCTOR_RETRIEVAL_READY" for check in report.checks))
+        self.assertEqual(report.summary["chunk_kind_counts"], {"content": 1, "metadata": 1})
+        self.assertEqual(report.summary["chunk_search_rows"], 2)
+        self.assertEqual(report.summary["metadata_projection_version"], METADATA_PROJECTION_VERSION)
+        self.assertEqual(report.summary["lexical_projection_version"], LEXICAL_PROJECTION_VERSION)
+        self.assertIn(report.summary["lexical_backend_mode"], {"fts5", "projection_substring"})
+        self.assertTrue(any(check.code == "DOCTOR_LEXICAL_PROJECTION_READY" for check in report.checks))
+        self.assertTrue(
+            any(
+                check.code in {"DOCTOR_LEXICAL_BACKEND_FTS5", "DOCTOR_LEXICAL_BACKEND_FALLBACK"}
+                for check in report.checks
+            )
+        )
 
     def test_doctor_require_grounding_fails_when_embeddings_are_missing(self) -> None:
         app = self.fx.build_app()

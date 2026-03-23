@@ -1,8 +1,10 @@
 from __future__ import annotations
 
+import json
 import unittest
 from unittest.mock import patch
 
+from agent import grounding as grounding_module
 from agent.tools import ToolError
 from agent.embeddings import sync_embeddings
 from tests.support import AppFixture, dummy_embedder_factory
@@ -48,19 +50,40 @@ class RuntimeAppTests(unittest.TestCase):
         )
         self.assertEqual(embed.errors, [])
         with patch("agent.app.create_embedder", side_effect=dummy_embedder_factory):
-            retrieval = app.retrieve("alpha evidence")
-            self.assertGreaterEqual(len(retrieval.candidates), 1)
-            chunk = retrieval.candidates[0]
+            seed_retrieval = app.retrieve("alpha evidence")
+            self.assertGreaterEqual(len(seed_retrieval.candidates), 1)
+            chunk = seed_retrieval.candidates[0]
             answer_text = f"alpha evidence lives here. [source: {chunk.rel_path}#{chunk.heading_path} | {chunk.chunk_key}]"
 
             with patch("agent.grounding.ensure_ollama_up"):
                 with patch("agent.grounding.create_embedder", side_effect=dummy_embedder_factory):
-                    with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
-                        grounded = app.answer_grounded("Where is alpha evidence?")
+                    grounded_retrieval = []
+                    original_retrieve = grounding_module.retrieve
+
+                    def capture_grounded_retrieval(*args, **kwargs):
+                        result = original_retrieve(*args, **kwargs)
+                        grounded_retrieval.append(result)
+                        return result
+
+                    with patch("agent.grounding.retrieve", side_effect=capture_grounded_retrieval):
+                        with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
+                            grounded = app.answer_grounded("Where is alpha evidence?")
 
         self.assertTrue(grounded.ok)
         self.assertIn(chunk.chunk_key, grounded.text)
-        self.assertTrue((grounded.run_dir / "run.json").exists())
+        self.assertEqual(len(grounded_retrieval), 1)
+        retrieval = grounded_retrieval[0]
+        run_path = grounded.run_dir / "run.json"
+        self.assertTrue(run_path.exists())
+        persisted = json.loads(run_path.read_text(encoding="utf-8"))
+        self.assertEqual(persisted["retrieval"]["lexical_backend_mode"], retrieval.lexical_backend_mode)
+        self.assertEqual(persisted["retrieval"]["lexical_backend_warning"], retrieval.lexical_backend_warning)
+        self.assertEqual(persisted["retrieval"]["rerank_applied"], retrieval.rerank_applied)
+        self.assertEqual(persisted["retrieval"]["rerank_intent"], retrieval.rerank_intent)
+        self.assertEqual(
+            persisted["retrieval"]["rerank_signals_available"],
+            retrieval.rerank_signals_available,
+        )
 
     def test_sync_embeddings_accepts_keyword_only_embedder_factory(self) -> None:
         app = self.fx.build_app()
@@ -79,7 +102,7 @@ class RuntimeAppTests(unittest.TestCase):
         )
 
         self.assertEqual(embed.errors, [])
-        self.assertEqual(embed.embedded_written, 1)
+        self.assertEqual(embed.embedded_written, 2)
 
     def test_export_memory_writes_json_under_security_root(self) -> None:
         app = self.fx.build_app()

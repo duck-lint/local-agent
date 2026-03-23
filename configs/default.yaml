@@ -65,13 +65,26 @@ embeddings:
     trust_remote_code: false
     offline_only: true
 retrieval:
-  lexical_k: 20
-  vector_k: 20
-  vector_fetch_k: 40
+  # NOTE: These defaults are tuned for higher recall and can be expensive:
+  # - Larger `lexical_k` and `vector_k` increase the number of candidates
+  #   to rank and fuse, raising CPU usage and query latency.
+  # - Larger `vector_fetch_k` increases vector scoring work.
+  # If you experience high latency or CPU load, consider lowering these, e.g.:
+  #   lexical_k: 20
+  #   vector_k: 20
+  #   vector_fetch_k: 40
+  # and only use higher values for explicit "high recall" runs or profiles.
+  lexical_k: 40
+  vector_k: 40
+  vector_fetch_k: 60
   rel_path_prefix: ""
   fusion: "simple_union"
 grounding:
-  evidence_top_n: 8
+  # Increased from the default (8) to 15 to improve citation robustness.
+  # This may increase prompt size, model latency, and cost. Operators can
+  # tune this value and/or `runs.max_total_evidence_chars` below based on
+  # their performance and cost requirements.
+  evidence_top_n: 15
   citation_validation:
     enabled: true
     strict: false

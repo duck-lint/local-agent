@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from array import array
+from datetime import date, datetime, timezone
 import heapq
+import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
@@ -23,6 +25,7 @@ except Exception:  # pragma: no cover
 class RetrievedChunk:
     chunk_key: str
     doc_key: str
+    chunk_kind: str
     rel_path: str
     heading_path: str
     chunk_anchor: str
@@ -42,12 +45,17 @@ class RetrievalResult:
     chunk_preprocess_sig: str
     query_preprocess_sig: str
     embed_db_schema_version: int
+    lexical_backend_mode: str
+    lexical_backend_warning: str
     vector_fetch_k_used: int
     vector_candidates_scored: int
     vector_candidates_prefilter: int
     vector_candidates_postfilter: int
     rel_path_prefix_applied: bool
     vector_filter_warning: str
+    rerank_applied: bool
+    rerank_intent: str
+    rerank_signals_available: bool
     candidates: list[RetrievedChunk]
 
 
@@ -81,11 +89,16 @@ def retrieve(
         fetch_k_used = vector_limit
 
     with connect_corpus_db(corpus_db_path) as corpus_conn:
-        lexical_rows = [dict(row) for row in query_chunks_lexical(corpus_conn, query_text=query, limit=lexical_limit)]
+        lexical_rows = query_chunks_lexical(corpus_conn, query_text=query, limit=lexical_limit)
         corpus_contract_sig = get_corpus_meta(corpus_conn, "corpus_contract_sig") or ""
+        lexical_backend_mode = get_corpus_meta(corpus_conn, "lexical_backend_mode") or "projection_substring"
+        lexical_backend_warning = get_corpus_meta(corpus_conn, "lexical_backend_warning") or ""
+    if lexical_rows:
+        lexical_backend_mode = str(lexical_rows[0].get("lexical_backend_mode") or lexical_backend_mode)
+        lexical_backend_warning = str(lexical_rows[0].get("lexical_backend_warning") or lexical_backend_warning)
 
     lexical_ranked: dict[str, float] = {}
-    lexical_meta: dict[str, dict[str, str]] = {}
+    lexical_meta: dict[str, dict[str, object]] = {}
     lexical_count = max(1, len(lexical_rows))
     for rank, row in enumerate(lexical_rows, start=1):
         chunk_key = str(row.get("chunk_key") or "")
@@ -95,11 +108,15 @@ def retrieve(
         lexical_ranked[chunk_key] = max(score, lexical_ranked.get(chunk_key, 0.0))
         lexical_meta[chunk_key] = {
             "doc_key": str(row.get("doc_key") or ""),
+            "chunk_kind": str(row.get("chunk_kind") or ""),
             "rel_path": str(row.get("rel_path") or ""),
             "heading_path": str(row.get("heading_path") or ""),
             "chunk_anchor": str(row.get("chunk_anchor") or ""),
             "chunk_title": str(row.get("chunk_title") or ""),
             "text": str(row.get("chunk_text") or ""),
+            "note_type": str(row.get("note_type") or ""),
+            "journal_entry_date": str(row.get("journal_entry_date") or ""),
+            "mtime": row.get("mtime") or 0.0,
         }
 
     query_input = preprocess_query_text(query=query, preprocess_name=preprocess_name)
@@ -121,7 +138,9 @@ def retrieve(
     )
     prefilter_count = len(scored)
 
-    metadata_rows = _fetch_chunk_metadata(corpus_db_path=corpus_db_path, chunk_keys=[key for _, key in scored]) if scored else {}
+    metadata_rows = (
+        _fetch_chunk_metadata(corpus_db_path=corpus_db_path, chunk_keys=[key for _, key in scored]) if scored else {}
+    )
     filtered_scored = [(score, key) for score, key in scored if key in metadata_rows]
     orphan_dropped = prefilter_count - len(filtered_scored)
 
@@ -154,6 +173,11 @@ def retrieve(
         lexical_meta=lexical_meta,
         vector_ranked=vector_ranked,
     )
+    reranked, rerank_applied, rerank_intent, rerank_signals_available = _apply_bounded_rerank(
+        query=query,
+        candidates=merged,
+        chunk_meta={**metadata_rows, **lexical_meta},
+    )
     return RetrievalResult(
         query=query,
         corpus_contract_sig=corpus_contract_sig,
@@ -161,13 +185,18 @@ def retrieve(
         chunk_preprocess_sig=chunk_preprocess_sig,
         query_preprocess_sig=query_preprocess_sig,
         embed_db_schema_version=embed_schema_version,
+        lexical_backend_mode=lexical_backend_mode,
+        lexical_backend_warning=lexical_backend_warning,
         vector_fetch_k_used=fetch_k_used,
         vector_candidates_scored=scored_count,
         vector_candidates_prefilter=prefilter_count,
         vector_candidates_postfilter=len(filtered_scored),
         rel_path_prefix_applied=prefix_applied,
         vector_filter_warning=filter_warning,
-        candidates=merged,
+        rerank_applied=rerank_applied,
+        rerank_intent=rerank_intent,
+        rerank_signals_available=rerank_signals_available,
+        candidates=reranked,
     )
 
 
@@ -239,7 +268,7 @@ def _compute_vector_candidates(
     return ranked, scored_count, vectors_normalized
 
 
-def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dict[str, dict[str, str]]:
+def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dict[str, dict[str, object]]:
     unique_keys = sorted({key for key in chunk_keys if key})
     if not unique_keys:
         return {}
@@ -250,11 +279,15 @@ def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dic
             SELECT
                 chunks.chunk_key AS chunk_key,
                 chunks.doc_key AS doc_key,
+                chunks.chunk_kind AS chunk_kind,
                 documents.rel_path AS rel_path,
                 chunks.heading_path AS heading_path,
                 chunks.chunk_anchor AS chunk_anchor,
                 chunks.chunk_title AS chunk_title,
-                chunks.text AS chunk_text
+                chunks.text AS chunk_text,
+                documents.entry_date AS entry_date,
+                documents.mtime AS mtime,
+                documents.frontmatter_json AS frontmatter_json
             FROM chunks
             INNER JOIN documents ON documents.id = chunks.doc_id
             WHERE chunks.chunk_key IN ({placeholders})
@@ -264,11 +297,15 @@ def _fetch_chunk_metadata(*, corpus_db_path: Path, chunk_keys: list[str]) -> dic
     return {
         str(row["chunk_key"]): {
             "doc_key": str(row["doc_key"]),
+            "chunk_kind": str(row["chunk_kind"]),
             "rel_path": str(row["rel_path"]),
             "heading_path": str(row["heading_path"]),
             "chunk_anchor": str(row["chunk_anchor"]),
             "chunk_title": str(row["chunk_title"]),
             "text": str(row["chunk_text"]),
+            "note_type": _note_type_from_frontmatter(str(row["frontmatter_json"] or "")),
+            "journal_entry_date": str(row["entry_date"] or ""),
+            "mtime": row["mtime"] or 0.0,
         }
         for row in rows
     }
@@ -278,7 +315,7 @@ def _fuse_candidates(
     *,
     corpus_db_path: Path,
     lexical_ranked: dict[str, float],
-    lexical_meta: dict[str, dict[str, str]],
+    lexical_meta: dict[str, dict[str, object]],
     vector_ranked: dict[str, float],
 ) -> list[RetrievedChunk]:
     all_keys = sorted(set(lexical_ranked) | set(vector_ranked))
@@ -304,6 +341,7 @@ def _fuse_candidates(
             RetrievedChunk(
                 chunk_key=chunk_key,
                 doc_key=str(meta.get("doc_key") or ""),
+                chunk_kind=str(meta.get("chunk_kind") or ""),
                 rel_path=str(meta.get("rel_path") or ""),
                 heading_path=str(meta.get("heading_path") or ""),
                 chunk_anchor=str(meta.get("chunk_anchor") or ""),
@@ -317,6 +355,103 @@ def _fuse_candidates(
         )
     out.sort(key=lambda item: (0 if item.method == "both" else 1, -item.score, item.chunk_key))
     return out
+
+
+def _apply_bounded_rerank(
+    *,
+    query: str,
+    candidates: list[RetrievedChunk],
+    chunk_meta: dict[str, dict[str, object]],
+) -> tuple[list[RetrievedChunk], bool, str, bool]:
+    intent = _detect_rerank_intent(query)
+    if not intent or not candidates:
+        return candidates, False, "", False
+
+    original_order = {item.chunk_key: index for index, item in enumerate(candidates)}
+    signals_available = False
+
+    def sort_key(item: RetrievedChunk) -> tuple[int, int, int, int]:
+        nonlocal signals_available
+        meta = chunk_meta.get(item.chunk_key, {})
+        note_type = str(meta.get("note_type") or "").strip().lower()
+        journal_entry_date = _date_ordinal(str(meta.get("journal_entry_date") or ""))
+        mtime_date = _mtime_ordinal(meta.get("mtime"))
+        best_date = journal_entry_date or mtime_date
+        class_match = note_type in {"journal", "journal_entry", "journal-entry"}
+
+        if intent in {"journal", "journal_recent"} and class_match:
+            signals_available = True
+        if intent in {"recent", "journal_recent"} and best_date > 0:
+            signals_available = True
+
+        class_bucket = 0 if intent not in {"journal", "journal_recent"} or class_match else 1
+        if intent in {"recent", "journal_recent"}:
+            date_bucket = 0 if best_date > 0 else 1
+            recency_key = -best_date if best_date > 0 else 0
+        else:
+            date_bucket = 0
+            recency_key = 0
+        return (
+            class_bucket,
+            date_bucket,
+            recency_key,
+            original_order.get(item.chunk_key, 0),
+        )
+
+    reranked = sorted(candidates, key=sort_key)
+    applied = signals_available and [item.chunk_key for item in reranked] != [item.chunk_key for item in candidates]
+    return reranked, applied, intent, signals_available
+
+
+def _detect_rerank_intent(query: str) -> str:
+    lowered = str(query or "").strip().lower()
+    if not lowered:
+        return ""
+    wants_recent = any(token in lowered for token in ("most recent", "latest", "newest", "recent"))
+    wants_journal = any(token in lowered for token in ("journal entries", "journal entry", "journal"))
+    if wants_recent and wants_journal:
+        return "journal_recent"
+    if wants_journal:
+        return "journal"
+    if wants_recent:
+        return "recent"
+    return ""
+
+
+def _date_ordinal(raw_value: str) -> int:
+    text = str(raw_value or "").strip()
+    if not text:
+        return 0
+    try:
+        return date.fromisoformat(text[:10]).toordinal()
+    except ValueError:
+        return 0
+
+
+def _mtime_ordinal(raw_value: object) -> int:
+    try:
+        timestamp = float(raw_value or 0.0)
+    except (TypeError, ValueError):
+        return 0
+    if timestamp <= 0.0:
+        return 0
+    try:
+        return datetime.fromtimestamp(timestamp, tz=timezone.utc).date().toordinal()
+    except (OverflowError, OSError, ValueError):
+        return 0
+
+
+def _note_type_from_frontmatter(raw_value: str) -> str:
+    text = str(raw_value or "").strip()
+    if not text:
+        return ""
+    try:
+        loaded = json.loads(text)
+    except json.JSONDecodeError:
+        return ""
+    if not isinstance(loaded, dict):
+        return ""
+    return str(loaded.get("note_type") or "").strip()
 
 
 def _dot_array(a: array | None, b: array) -> float:
