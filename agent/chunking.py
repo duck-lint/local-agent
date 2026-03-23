@@ -60,8 +60,10 @@ def sha256_text(value: str) -> str:
     return hashlib.sha256(value.encode("utf-8", errors="replace")).hexdigest()
 
 
-def stable_doc_key_from_rel_path(rel_path: str, namespace: str = "obsidian") -> str:
+def stable_doc_key_from_rel_path(rel_path: str, namespace: str = "obsidian", *, source_name: str = "") -> str:
     rel_posix = rel_path.replace("\\", "/").strip().lower()
+    if source_name:
+        return sha256_text(f"{namespace}:{source_name}:{rel_posix}")[:24]
     return sha256_text(f"{namespace}:{rel_posix}")[:24]
 
 

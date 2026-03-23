@@ -237,7 +237,86 @@ class CorpusContractTests(unittest.TestCase):
         self.assertTrue(third_content_keys)
         self.assertNotEqual(third_content_keys, first_content_keys)
 
-    def test_corpus_contract_changes_when_metadata_projection_version_changes(self) -> None:
+    def test_multi_source_same_rel_path_no_collision(self) -> None:
+        self.fx.write_corpus_note(
+            "shared.md",
+            "# Corpus Version\nThis note lives in the corpus source.\n",
+        )
+        self.fx.write_scratch_note(
+            "shared.md",
+            "# Scratch Version\nThis note lives in the scratch source.\n",
+        )
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+        self.assertEqual(result.errors, [])
+        self.assertEqual(result.total_docs, 3)
+
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            docs = conn.execute(
+                """
+                SELECT d.doc_key, s.name AS source_name, d.rel_path
+                FROM documents d
+                INNER JOIN sources s ON s.id = d.source_id
+                WHERE d.rel_path = 'shared.md'
+                ORDER BY s.name
+                """
+            ).fetchall()
+        self.assertEqual(len(docs), 2)
+        doc_keys = {str(doc["doc_key"]) for doc in docs}
+        self.assertEqual(len(doc_keys), 2, "same-rel-path notes from different sources must have distinct doc_keys")
+
+        second = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+        self.assertEqual(second.errors, [])
+        self.assertEqual(second.docs_changed, 0)
+
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            docs2 = conn.execute(
+                """
+                SELECT d.doc_key, s.name AS source_name, d.rel_path
+                FROM documents d
+                INNER JOIN sources s ON s.id = d.source_id
+                WHERE d.rel_path = 'shared.md'
+                ORDER BY s.name
+                """
+            ).fetchall()
+        doc_keys2 = {str(doc["doc_key"]) for doc in docs2}
+        self.assertEqual(doc_keys, doc_keys2, "fallback doc_keys must be stable across reruns")
+
+    def test_explicit_uuid_overrides_fallback_across_sources(self) -> None:
+        self.fx.write_scratch_note(
+            "explicit.md",
+            "---\nuuid: explicit-uuid-note\n---\n\n# Explicit UUID\nContent here.\n",
+        )
+
+        result = sync_corpus(
+            db_path=self.fx.build_app().corpus_db_path(),
+            source_specs=self.fx.app_config.corpus.sources,
+            security_root=self.fx.roots.security_root,
+            corpus_config=self.fx.app_config.corpus,
+            force_rebuild=False,
+        )
+        self.assertEqual(result.errors, [])
+
+        with connect_db(self.fx.build_app().corpus_db_path()) as conn:
+            doc = conn.execute(
+                "SELECT doc_key FROM documents WHERE rel_path = 'explicit.md'"
+            ).fetchone()
+        self.assertIsNotNone(doc)
+        self.assertEqual(str(doc["doc_key"]), "explicit-uuid-note")
+
+
         original = self.fx.app_config.corpus
         baseline = sync_corpus(
             db_path=self.fx.build_app().corpus_db_path(),

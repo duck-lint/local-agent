@@ -145,8 +145,9 @@ def _document_record_from_file(
     yaml_block, body = split_frontmatter(text)
     yaml_present, yaml_parse_ok, yaml_error, frontmatter = _frontmatter_status(yaml_block)
     raw_doc_key = str(frontmatter.get("uuid") or "").strip()
-    doc_key = raw_doc_key or stable_doc_key_from_rel_path(rel_path)
+    doc_key = raw_doc_key or stable_doc_key_from_rel_path(rel_path, source_name=source_name)
     source_uri = canonicalize_source_uri(rel_path)
+    chunk_source_uri = canonicalize_source_uri(f"{source_name}/{rel_path}") if source_name else source_uri
     source_hash = sha256_text(text)
     sections = split_into_sections(body)
     title = infer_document_title(frontmatter, rel_path, sections)
@@ -169,7 +170,7 @@ def _document_record_from_file(
     chunk_records.append(
         ChunkRecord(
             chunk_key=stable_chunk_key(
-                source_uri=source_uri,
+                source_uri=chunk_source_uri,
                 chunk_kind=CHUNK_KIND_METADATA,
                 heading_path=[METADATA_HEADING_PATH],
                 section_index=METADATA_SECTION_INDEX,
@@ -193,7 +194,7 @@ def _document_record_from_file(
         chunk_records.append(
             ChunkRecord(
                 chunk_key=stable_chunk_key(
-                    source_uri=source_uri,
+                    source_uri=chunk_source_uri,
                     chunk_kind=CHUNK_KIND_CONTENT,
                     heading_path=draft.heading_path.split(" > ") if draft.heading_path else [],
                     section_index=draft.section_index,

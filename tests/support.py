@@ -119,6 +119,15 @@ class AppFixture:
         path.write_text(content, encoding="utf-8")
         return path
 
+    def scratch_path(self, name: str) -> Path:
+        return self.workroot / "allowed" / "scratch" / name
+
+    def write_scratch_note(self, name: str, content: str) -> Path:
+        path = self.scratch_path(name)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(content, encoding="utf-8")
+        return path
+
     def build_app(self, *, config_override: Optional[dict] = None) -> LocalAgentApp:
         if config_override:
             raw_config = deep_merge_config(self.raw_config, config_override)
