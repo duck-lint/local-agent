@@ -158,6 +158,10 @@ Check these fields first:
   - rebuild corpus and embeddings, then rerun `doctor --require-grounding`
 - `DOCTOR_MEMORY_DANGLING_EVIDENCE`
   - reset or repair durable memory entries that cite removed chunk keys
+- `DUPLICATE_DOCUMENT_IDENTITY`
+  - `python -m agent index --json` found two configured sources that resolve to the same global document identity
+  - if the notes are missing UUIDs, add explicit `uuid` frontmatter to one or both notes, or rename one note so the relative path changes
+  - if the notes already have UUIDs, assign distinct UUIDs unless both files intentionally represent the same document
 
 ## Security Checks
 

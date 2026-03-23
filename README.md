@@ -75,6 +75,13 @@ The corpus ingester ports the vault-aware logic that matters for retrieval quali
 - wikilink extraction
 - date extraction from paths and metadata
 
+Document identity is intentionally strict and global across configured sources:
+
+- frontmatter `uuid` is the authoritative document identity when present
+- notes without `uuid` fall back to a stable `doc_key` derived from the note's relative path
+- fallback `doc_key` values are still globally unique, so two configured sources cannot contain the same relative-path note without UUIDs
+- if that happens, corpus ingest fails fast with a duplicate document identity error; the supported fixes are to add UUIDs or rename one of the notes
+
 The only supported chunking and embedding-preprocess profile is `obsidian_v1`.
 
 ## Storage

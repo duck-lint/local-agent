@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import sqlite3
 from pathlib import Path
 from typing import Optional
 
@@ -36,6 +37,7 @@ from agent.corpus_db import (
     count_chunks,
     count_docs,
     get_meta,
+    get_document_by_doc_key,
     init_db,
     prune_docs_not_in_source,
     query_chunks_lexical,
@@ -141,11 +143,12 @@ def _document_record_from_file(
     text: str,
     max_chars: int,
     overlap: int,
-) -> tuple[DocumentRecord, list[ChunkRecord]]:
+) -> tuple[DocumentRecord, list[ChunkRecord], bool]:
     yaml_block, body = split_frontmatter(text)
     yaml_present, yaml_parse_ok, yaml_error, frontmatter = _frontmatter_status(yaml_block)
     raw_doc_key = str(frontmatter.get("uuid") or "").strip()
     doc_key = raw_doc_key or stable_doc_key_from_rel_path(rel_path)
+    uses_explicit_uuid = bool(raw_doc_key)
     source_uri = canonicalize_source_uri(rel_path)
     source_hash = sha256_text(text)
     sections = split_into_sections(body)
@@ -165,11 +168,12 @@ def _document_record_from_file(
         source_date=source_date,
     )
     body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
+    chunk_key_source = doc_key if uses_explicit_uuid else source_uri
     chunk_records: list[ChunkRecord] = []
     chunk_records.append(
         ChunkRecord(
             chunk_key=stable_chunk_key(
-                source_uri=source_uri,
+                source_uri=chunk_key_source,
                 chunk_kind=CHUNK_KIND_METADATA,
                 heading_path=[METADATA_HEADING_PATH],
                 section_index=METADATA_SECTION_INDEX,
@@ -193,7 +197,7 @@ def _document_record_from_file(
         chunk_records.append(
             ChunkRecord(
                 chunk_key=stable_chunk_key(
-                    source_uri=source_uri,
+                    source_uri=chunk_key_source,
                     chunk_kind=CHUNK_KIND_CONTENT,
                     heading_path=draft.heading_path.split(" > ") if draft.heading_path else [],
                     section_index=draft.section_index,
@@ -234,12 +238,48 @@ def _document_record_from_file(
         mtime=float(stat.st_mtime),
         size=int(stat.st_size),
     )
-    return document, chunk_records
+    return document, chunk_records, uses_explicit_uuid
 
 
 def _document_requires_reingest(conn, *, doc_id: int) -> bool:
     row = conn.execute("SELECT COUNT(*) AS c FROM chunks WHERE doc_id = ?", (doc_id,)).fetchone()
     return row is None or int(row["c"]) == 0
+
+
+def _format_duplicate_document_identity_error(
+    conn,
+    *,
+    source_name: str,
+    rel_path: str,
+    document: DocumentRecord,
+    uses_explicit_uuid: bool,
+) -> str:
+    existing = get_document_by_doc_key(conn, doc_key=document.doc_key)
+    duplicate_location = "another indexed document"
+    if existing is not None:
+        duplicate_location = f"{existing['source_name']}:{existing['rel_path']}"
+
+    if uses_explicit_uuid:
+        reason = (
+            f"explicit uuid '{document.doc_key}' already belongs to {duplicate_location}. "
+            "Document identity is globally unique across all configured sources."
+        )
+        remediation = (
+            "Assign a different uuid to one note or remove the duplicate note if both files are meant "
+            "to represent the same document."
+        )
+    else:
+        reason = (
+            f"fallback doc_key '{document.doc_key}' is derived from the relative path '{rel_path}' and "
+            f"already belongs to {duplicate_location}. Cross-source duplicate fallback identities are "
+            "invalid corpus input because fallback doc_keys stay globally unique."
+        )
+        remediation = (
+            "Add explicit uuid frontmatter to one or both notes to disambiguate them, or rename one note "
+            "so its relative path changes."
+        )
+
+    return f"DUPLICATE_DOCUMENT_IDENTITY: {source_name}:{rel_path}: {reason} {remediation}"
 
 
 def sync_corpus(
@@ -297,7 +337,7 @@ def sync_corpus(
                     continue
 
                 try:
-                    document, chunks = _document_record_from_file(
+                    document, chunks, uses_explicit_uuid = _document_record_from_file(
                         source_name=source.name,
                         rel_path=rel_path,
                         safe_path=safe_path,
@@ -311,6 +351,20 @@ def sync_corpus(
 
                 try:
                     doc_id, changed = upsert_document(conn, source_id=source_id, record=document)
+                except sqlite3.IntegrityError as exc:
+                    if "documents.doc_key" in str(exc):
+                        errors.append(
+                            _format_duplicate_document_identity_error(
+                                conn,
+                                source_name=source.name,
+                                rel_path=rel_path,
+                                document=document,
+                                uses_explicit_uuid=uses_explicit_uuid,
+                            )
+                        )
+                        continue
+                    errors.append(f"{source.name}:{rel_path}: failed to upsert document: {exc}")
+                    continue
                 except Exception as exc:
                     errors.append(f"{source.name}:{rel_path}: failed to upsert document: {exc}")
                     continue
