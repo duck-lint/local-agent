@@ -747,6 +747,7 @@ def _query_chunk_search_fallback(
             OR instr(lower(journal_entry_date), lower(?)) > 0
             OR instr(lower(layer), lower(?)) > 0
             OR instr(lower(register), lower(?)) > 0
+        ORDER BY chunk_key
         LIMIT ?
         """,
         (
