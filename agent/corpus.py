@@ -135,6 +135,12 @@ def _frontmatter_status(yaml_block: str) -> tuple[int, Optional[int], Optional[s
     return 1, 1, None, frontmatter
 
 
+def _chunk_key_source(*, doc_key: str, source_uri: str, uses_explicit_uuid: bool) -> str:
+    if not uses_explicit_uuid:
+        return source_uri
+    return f"doc_key:{sha256_text(doc_key)}"
+
+
 def _document_record_from_file(
     *,
     source_name: str,
@@ -168,7 +174,11 @@ def _document_record_from_file(
         source_date=source_date,
     )
     body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
-    chunk_key_source = doc_key if uses_explicit_uuid else source_uri
+    chunk_key_source = _chunk_key_source(
+        doc_key=doc_key,
+        source_uri=source_uri,
+        uses_explicit_uuid=uses_explicit_uuid,
+    )
     chunk_records: list[ChunkRecord] = []
     chunk_records.append(
         ChunkRecord(
