@@ -400,10 +400,11 @@ def sync_corpus(
             except Exception as exc:
                 errors.append(f"source '{source.name}': failed to prune removed documents: {exc}")
 
-        try:
-            rebuild_chunk_search(conn)
-        except Exception as exc:
-            errors.append(f"lexical projection rebuild failed: {exc}")
+        if force_refresh_all or docs_changed or docs_pruned or chunks_written:
+            try:
+                rebuild_chunk_search(conn)
+            except Exception as exc:
+                errors.append(f"lexical projection rebuild failed: {exc}")
         conn.commit()
         total_docs = count_docs(conn)
         total_chunks = count_chunks(conn)
