@@ -1,9 +1,11 @@
 from __future__ import annotations
 
 from datetime import datetime, timezone
+import sqlite3
 import unittest
 from unittest.mock import patch
 
+from agent.corpus_db import _query_chunk_search_fallback
 from agent.embeddings import sync_embeddings
 from agent.retrieval import RetrievedChunk, _apply_bounded_rerank
 from tests.support import AppFixture, dummy_embedder_factory
@@ -260,6 +262,90 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertEqual(intent, "recent")
         self.assertTrue(signals_available)
         self.assertEqual(reranked[0].chunk_key, "newer-mtime")
+
+
+class FallbackLimitRegressionTests(unittest.TestCase):
+    """Regression tests asserting that _query_chunk_search_fallback respects its LIMIT."""
+
+    def _make_conn(self) -> sqlite3.Connection:
+        conn = sqlite3.connect(":memory:")
+        conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA foreign_keys = OFF")  # no documents/sources tables in this minimal fixture
+        conn.execute(
+            """
+            CREATE TABLE chunk_search (
+                id INTEGER PRIMARY KEY,
+                doc_id INTEGER NOT NULL,
+                chunk_key TEXT NOT NULL UNIQUE,
+                chunk_kind TEXT NOT NULL,
+                rel_path TEXT NOT NULL,
+                body_text TEXT NOT NULL,
+                chunk_title TEXT NOT NULL,
+                heading_path TEXT NOT NULL,
+                canonical_name TEXT NOT NULL,
+                aliases_text TEXT NOT NULL,
+                tags_text TEXT NOT NULL,
+                note_type TEXT NOT NULL,
+                journal_entry_date TEXT,
+                layer TEXT NOT NULL,
+                register TEXT NOT NULL,
+                updated_at REAL NOT NULL
+            )
+            """
+        )
+        return conn
+
+    def _insert_rows(self, conn: sqlite3.Connection, count: int, *, query_word: str) -> None:
+        for i in range(count):
+            conn.execute(
+                """
+                INSERT INTO chunk_search
+                    (doc_id, chunk_key, chunk_kind, rel_path, body_text,
+                     chunk_title, heading_path, canonical_name, aliases_text,
+                     tags_text, note_type, journal_entry_date, layer, register, updated_at)
+                VALUES (?, ?, 'content', ?, ?, ?, '', '', '', '', 'knowledge', NULL, '', '', 0.0)
+                """,
+                (
+                    i,
+                    f"chunk-{i}",
+                    f"doc-{i}.md",
+                    f"{query_word} body text for row {i}",
+                    f"{query_word} title {i}",
+                ),
+            )
+        conn.commit()
+
+    def test_fallback_candidate_count_is_capped_at_limit(self) -> None:
+        conn = self._make_conn()
+        total_rows = 200
+        limit = 10
+        self._insert_rows(conn, total_rows, query_word="common")
+
+        results = _query_chunk_search_fallback(conn, query_text="common", limit=limit)
+
+        self.assertLessEqual(
+            len(results),
+            limit,
+            f"Expected at most {limit} rows but got {len(results)}",
+        )
+
+    def test_fallback_returns_all_matching_when_below_limit(self) -> None:
+        conn = self._make_conn()
+        self._insert_rows(conn, 5, query_word="raretoken")
+
+        results = _query_chunk_search_fallback(conn, query_text="raretoken", limit=50)
+
+        self.assertEqual(len(results), 5)
+
+    def test_fallback_rows_include_backend_score(self) -> None:
+        conn = self._make_conn()
+        self._insert_rows(conn, 3, query_word="scorecheck")
+
+        results = _query_chunk_search_fallback(conn, query_text="scorecheck", limit=10)
+
+        for row in results:
+            self.assertIn("backend_score", row)
+            self.assertIsInstance(row["backend_score"], float)
 
 
 if __name__ == "__main__":

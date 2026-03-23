@@ -460,10 +460,10 @@ def query_chunks_lexical(
             actual_backend = "projection_substring"
             if not backend_warning:
                 backend_warning = "FTS unavailable or yielded no tokenized query; using projection substring fallback."
-            candidates = _query_chunk_search_fallback(conn, query_text=raw_query)
+            candidates = _query_chunk_search_fallback(conn, query_text=raw_query, limit=fetch_limit)
     else:
         actual_backend = "projection_substring"
-        candidates = _query_chunk_search_fallback(conn, query_text=raw_query)
+        candidates = _query_chunk_search_fallback(conn, query_text=raw_query, limit=fetch_limit)
 
     if not candidates:
         return []
@@ -716,6 +716,7 @@ def _query_chunk_search_fallback(
     conn: sqlite3.Connection,
     *,
     query_text: str,
+    limit: int,
 ) -> list[dict[str, object]]:
     rows = conn.execute(
         """
@@ -746,6 +747,8 @@ def _query_chunk_search_fallback(
             OR instr(lower(journal_entry_date), lower(?)) > 0
             OR instr(lower(layer), lower(?)) > 0
             OR instr(lower(register), lower(?)) > 0
+        ORDER BY chunk_key
+        LIMIT ?
         """,
         (
             query_text,
@@ -759,6 +762,7 @@ def _query_chunk_search_fallback(
             query_text,
             query_text,
             query_text,
+            max(1, int(limit)),
         ),
     ).fetchall()
     out: list[dict[str, object]] = []
