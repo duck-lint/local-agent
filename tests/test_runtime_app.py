@@ -54,14 +54,15 @@ class RuntimeAppTests(unittest.TestCase):
             self.assertGreaterEqual(len(seed_retrieval.candidates), 1)
             chunk = seed_retrieval.candidates[0]
             answer_text = f"alpha evidence lives here. [source: {chunk.rel_path}#{chunk.heading_path} | {chunk.chunk_key}]"
-            grounded_retrieval = {}
-            original_retrieve = grounding_module.retrieve
 
             with patch("agent.grounding.ensure_ollama_up"):
                 with patch("agent.grounding.create_embedder", side_effect=dummy_embedder_factory):
+                    grounded_retrieval = []
+                    original_retrieve = grounding_module.retrieve
+
                     def capture_grounded_retrieval(*args, **kwargs):
                         result = original_retrieve(*args, **kwargs)
-                        grounded_retrieval["result"] = result
+                        grounded_retrieval.append(result)
                         return result
 
                     with patch("agent.grounding.retrieve", side_effect=capture_grounded_retrieval):
@@ -70,8 +71,8 @@ class RuntimeAppTests(unittest.TestCase):
 
         self.assertTrue(grounded.ok)
         self.assertIn(chunk.chunk_key, grounded.text)
-        self.assertIn("result", grounded_retrieval)
-        retrieval = grounded_retrieval["result"]
+        self.assertEqual(len(grounded_retrieval), 1)
+        retrieval = grounded_retrieval[0]
         run_path = grounded.run_dir / "run.json"
         self.assertTrue(run_path.exists())
         persisted = json.loads(run_path.read_text(encoding="utf-8"))
