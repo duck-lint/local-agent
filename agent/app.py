@@ -192,6 +192,7 @@ class LocalAgentApp:
         self,
         *,
         force_rebuild: bool = False,
+        stage_dump_dir: Optional[Path] = None,
     ):
         return sync_corpus(
             db_path=self.corpus_db_path(),
@@ -199,6 +200,7 @@ class LocalAgentApp:
             security_root=self.roots.security_root,
             corpus_config=self.config.corpus,
             force_rebuild=force_rebuild,
+            stage_dump_dir=stage_dump_dir,
         )
 
     def embed_corpus(

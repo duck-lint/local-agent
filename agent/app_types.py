@@ -28,7 +28,6 @@ class CorpusConfig:
     db_path: str
     sources: list[SourceConfig]
     max_chars: int
-    overlap: int
 
 
 @dataclass(frozen=True)
@@ -163,6 +162,7 @@ class ChunkRecord:
     start_char: int
     end_char: int
     out_links: list[dict[str, str]]
+    section_ordinal: Optional[int] = None
 
 
 @dataclass(frozen=True)

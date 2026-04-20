@@ -4,6 +4,7 @@ import hashlib
 import json
 import os
 import sqlite3
+import time
 from pathlib import Path
 from typing import Optional
 
@@ -53,14 +54,24 @@ from agent.tools import (
     get_workspace_root,
     resolve_and_validate_path,
 )
+from agent.manifests import (
+    append_manifest_index,
+    git_info,
+    stable_settings_hash,
+    system_info,
+    utc_iso,
+    utc_now,
+    write_run_manifest,
+)
+from agent.stage_dump import StageDumper
 
 
-def compute_corpus_contract_sig(*, max_chars: int, overlap: int) -> str:
+def compute_corpus_contract_sig(*, max_chars: int) -> str:
     payload = {
         "chunk_profile": "obsidian_v1",
-        "chunk_impl": "vault_corpus_v2_metadata",
+        "chunk_impl": "vault_corpus_v3_paragraph",
         "max_chars": int(max_chars),
-        "overlap": int(overlap),
+        "section_ordinal": True,
         "metadata_chunk_policy": {
             "enabled": True,
             "kind": CHUNK_KIND_METADATA,
@@ -148,7 +159,6 @@ def _document_record_from_file(
     safe_path: Path,
     text: str,
     max_chars: int,
-    overlap: int,
 ) -> tuple[DocumentRecord, list[ChunkRecord], bool]:
     yaml_block, body = split_frontmatter(text)
     yaml_present, yaml_parse_ok, yaml_error, frontmatter = _frontmatter_status(yaml_block)
@@ -171,7 +181,7 @@ def _document_record_from_file(
         document_title=title,
         entry_date=entry_date,
     )
-    body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars, overlap=overlap)
+    body_chunks = build_markdown_chunks(body_text=body, max_chars=max_chars)
     chunk_key_source = _chunk_key_source(
         doc_key=doc_key,
         source_uri=source_uri,
@@ -191,6 +201,7 @@ def _document_record_from_file(
             chunk_kind=CHUNK_KIND_METADATA,
             chunk_index=METADATA_CHUNK_INDEX,
             section_index=METADATA_SECTION_INDEX,
+            section_ordinal=None,
             heading_path=METADATA_HEADING_PATH,
             chunk_anchor=METADATA_CHUNK_ANCHOR,
             chunk_title=METADATA_CHUNK_TITLE,
@@ -210,11 +221,13 @@ def _document_record_from_file(
                     heading_path=draft.heading_path.split(" > ") if draft.heading_path else [],
                     section_index=draft.section_index,
                     chunk_index=draft.chunk_index,
+                    section_ordinal=draft.section_ordinal,
                 ),
                 doc_key=doc_key,
                 chunk_kind=CHUNK_KIND_CONTENT,
                 chunk_index=draft.chunk_index,
                 section_index=draft.section_index,
+                section_ordinal=draft.section_ordinal,
                 heading_path=draft.heading_path,
                 chunk_anchor=draft.chunk_anchor,
                 chunk_title=draft.chunk_title,
@@ -297,8 +310,11 @@ def sync_corpus(
     security_root: Path,
     corpus_config: CorpusConfig,
     force_rebuild: bool = False,
+    stage_dump_dir: Optional[Path] = None,
 ) -> CorpusSyncResult:
     init_db(db_path)
+    started_at = utc_now()
+    start_perf = time.perf_counter()
     errors: list[str] = []
     docs_scanned = 0
     docs_changed = 0
@@ -307,8 +323,9 @@ def sync_corpus(
     chunks_written = 0
     contract_sig = compute_corpus_contract_sig(
         max_chars=corpus_config.max_chars,
-        overlap=corpus_config.overlap,
     )
+    run_id_for_dump = started_at.strftime("%Y%m%d_%H%M%S")
+    stage_dumper = StageDumper(stage_dump_dir, run_id_for_dump)
 
     with connect_db(db_path) as conn:
         stored_sig = get_meta(conn, "corpus_contract_sig")
@@ -351,11 +368,21 @@ def sync_corpus(
                         safe_path=safe_path,
                         text=text,
                         max_chars=corpus_config.max_chars,
-                        overlap=corpus_config.overlap,
                     )
                 except Exception as exc:
                     errors.append(f"{source.name}:{rel_path}: failed to prepare document: {exc}")
                     continue
+
+                if stage_dumper.enabled:
+                    try:
+                        stage_dumper.dump_stage1_input(
+                            source_name=source.name, rel_path=rel_path, text=text
+                        )
+                        stage_dumper.dump_stage2_chunks(
+                            source_name=source.name, rel_path=rel_path, chunks=chunks
+                        )
+                    except Exception as exc:
+                        errors.append(f"{source.name}:{rel_path}: stage dump failed: {exc}")
 
                 try:
                     doc_id, changed = upsert_document(conn, source_id=source_id, record=document)
@@ -408,6 +435,78 @@ def sync_corpus(
         conn.commit()
         total_docs = count_docs(conn)
         total_chunks = count_chunks(conn)
+
+    finished_at = utc_now()
+    duration_s = time.perf_counter() - start_perf
+    settings_payload = {
+        "corpus_contract_sig": contract_sig,
+        "max_chars": int(corpus_config.max_chars),
+        "sources": [
+            {"name": source.name, "root": source.root, "kind": source.kind}
+            for source in source_specs
+        ],
+        "force_rebuild": bool(force_rebuild),
+    }
+    settings_hash_short, settings_hash_full = stable_settings_hash(settings_payload)
+    git_commit, git_dirty = git_info(security_root)
+    run_id = f"{started_at.strftime('%Y%m%d_%H%M%S')}_{settings_hash_short}"
+    manifest_payload = {
+        "run_id": run_id,
+        "kind": "index",
+        "started_at_utc": utc_iso(started_at),
+        "finished_at_utc": utc_iso(finished_at),
+        "duration_s": duration_s,
+        "settings_for_hash": settings_payload,
+        "settings_hash_short": settings_hash_short,
+        "settings_hash_full": settings_hash_full,
+        "system": system_info(),
+        "repo": {"git_commit": git_commit, "git_dirty": git_dirty},
+        "input_provenance": {
+            "corpus_db_path_abs": str(db_path),
+            "sources_total": len(source_specs),
+        },
+        "outcomes": {
+            "docs_scanned": docs_scanned,
+            "docs_changed": docs_changed,
+            "docs_unchanged": docs_unchanged,
+            "docs_pruned": docs_pruned,
+            "chunks_written": chunks_written,
+            "total_docs": total_docs,
+            "total_chunks": total_chunks,
+            "errors_count": len(errors),
+        },
+    }
+    manifest_dir = security_root / "index" / "manifests"
+    try:
+        manifest_path = write_run_manifest(
+            manifest_dir=manifest_dir,
+            kind="index",
+            settings_hash_short=settings_hash_short,
+            finished_at=finished_at,
+            payload=manifest_payload,
+        )
+        append_manifest_index(
+            manifest_dir,
+            {
+                "manifest_filename": manifest_path.name,
+                "run_id": run_id,
+                "kind": "index",
+                "started_at_utc": manifest_payload["started_at_utc"],
+                "finished_at_utc": manifest_payload["finished_at_utc"],
+                "duration_s": duration_s,
+                "settings_hash_short": settings_hash_short,
+                "corpus_contract_sig": contract_sig,
+                "docs_changed": docs_changed,
+                "docs_unchanged": docs_unchanged,
+                "docs_pruned": docs_pruned,
+                "total_chunks": total_chunks,
+                "errors_count": len(errors),
+                "git_commit": git_commit,
+                "git_dirty": git_dirty,
+            },
+        )
+    except Exception as exc:
+        errors.append(f"manifest write failed: {exc}")
 
     return CorpusSyncResult(
         sources_total=len(source_specs),

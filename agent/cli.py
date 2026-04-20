@@ -3,6 +3,7 @@ from __future__ import annotations
 import argparse
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from agent.app import LocalAgentApp
@@ -53,6 +54,13 @@ def build_parser() -> argparse.ArgumentParser:
     p_index = sub.add_parser("index", help="Build or refresh the corpus index.")
     p_index.add_argument("--rebuild", action="store_true", help="Rebuild chunk state for every corpus document.")
     p_index.add_argument("--json", action="store_true", help="Emit machine-readable JSON.")
+    p_index.add_argument(
+        "--debug-stage-dump",
+        type=str,
+        default=None,
+        metavar="DIR",
+        help="Opt-in: write per-document stage_1 input + stage_2 chunks under DIR/<run_id>/.",
+    )
 
     p_query = sub.add_parser("query", help="Inspect lexical corpus matches.")
     p_query.add_argument("text", type=str)
@@ -132,7 +140,12 @@ def main() -> int:
         return 0
 
     if args.cmd == "index":
-        result = app.ingest_corpus(force_rebuild=bool(getattr(args, "rebuild", False)))
+        stage_dump_arg = getattr(args, "debug_stage_dump", None)
+        stage_dump_path = Path(stage_dump_arg).expanduser().resolve() if stage_dump_arg else None
+        result = app.ingest_corpus(
+            force_rebuild=bool(getattr(args, "rebuild", False)),
+            stage_dump_dir=stage_dump_path,
+        )
         payload = {
             "ok": len(result.errors) == 0,
             "corpus_db": result.corpus_db_path,

@@ -137,7 +137,6 @@ def run_doctor(
     summary["lexical_backend_warning"] = lexical_backend_warning
     expected_contract_sig = compute_corpus_contract_sig(
         max_chars=app_config.corpus.max_chars,
-        overlap=app_config.corpus.overlap,
     )
     if chunks_total <= 0:
         checks.append(

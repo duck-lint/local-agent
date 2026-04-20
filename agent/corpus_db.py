@@ -15,7 +15,7 @@ from agent.chunking import (
     parse_string_list_field,
 )
 
-SCHEMA_VERSION = 6
+SCHEMA_VERSION = 7
 
 
 class _ClosingConnection(sqlite3.Connection):
@@ -97,6 +97,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
             chunk_kind TEXT NOT NULL,
             chunk_index INTEGER NOT NULL,
             section_index INTEGER NOT NULL,
+            section_ordinal INTEGER,
             heading_path TEXT NOT NULL,
             chunk_anchor TEXT NOT NULL,
             chunk_title TEXT NOT NULL,
@@ -139,7 +140,7 @@ def _create_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX idx_chunk_search_kind ON chunk_search(chunk_kind);
         """
     )
-    conn.execute("PRAGMA user_version = 6")
+    conn.execute("PRAGMA user_version = 7")
     set_meta(conn, "schema_version", str(SCHEMA_VERSION))
 
 
@@ -344,9 +345,10 @@ def replace_document_chunks(
         conn.execute(
             """
             INSERT INTO chunks(
-                doc_id, chunk_key, doc_key, chunk_kind, chunk_index, section_index, heading_path, chunk_anchor,
-                chunk_title, text, chunk_hash, start_char, end_char, out_links_json, created_at
-            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                doc_id, chunk_key, doc_key, chunk_kind, chunk_index, section_index, section_ordinal,
+                heading_path, chunk_anchor, chunk_title, text, chunk_hash, start_char, end_char,
+                out_links_json, created_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """,
             (
                 doc_id,
@@ -355,6 +357,7 @@ def replace_document_chunks(
                 chunk.chunk_kind,
                 int(chunk.chunk_index),
                 int(chunk.section_index),
+                None if chunk.section_ordinal is None else int(chunk.section_ordinal),
                 chunk.heading_path,
                 chunk.chunk_anchor,
                 chunk.chunk_title,

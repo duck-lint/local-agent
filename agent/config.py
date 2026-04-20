@@ -70,7 +70,6 @@ DEFAULT_CONFIG: dict[str, Any] = {
             {"name": "scratch", "root": "allowed/scratch/", "kind": "scratch"},
         ],
         "max_chars": 1200,
-        "overlap": 120,
     },
     "embeddings": {
         "db_path": "embeddings/db/embeddings.sqlite",
@@ -355,12 +354,9 @@ def build_app_config(raw_cfg: Mapping[str, Any]) -> AppConfig:
         db_path=_string(corpus_raw.get("db_path"), DEFAULT_CONFIG["corpus"]["db_path"]),
         sources=_parse_source_configs(corpus_raw.get("sources", DEFAULT_CONFIG["corpus"]["sources"])),
         max_chars=_as_int(corpus_raw.get("max_chars"), DEFAULT_CONFIG["corpus"]["max_chars"]),
-        overlap=_as_int(corpus_raw.get("overlap"), DEFAULT_CONFIG["corpus"]["overlap"]),
     )
     if corpus.max_chars <= 0:
         raise ValueError("corpus.max_chars must be > 0")
-    if corpus.overlap < 0 or corpus.overlap >= corpus.max_chars:
-        raise ValueError("corpus.overlap must be >= 0 and smaller than corpus.max_chars")
 
     embeddings_raw = cfg.get("embeddings") if isinstance(cfg.get("embeddings"), dict) else {}
     torch_raw = embeddings_raw.get("torch") if isinstance(embeddings_raw.get("torch"), dict) else {}

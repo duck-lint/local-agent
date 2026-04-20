@@ -16,7 +16,7 @@ class ConfigContractTests(unittest.TestCase):
             deep_merge_config(
                 DEFAULT_CONFIG,
                 {
-                    "corpus": {"db_path": "index/custom.sqlite", "max_chars": 256, "overlap": 32},
+                    "corpus": {"db_path": "index/custom.sqlite", "max_chars": 256},
                     "grounding": {"evidence_top_n": 4},
                     "memory": {"db_path": "memory/custom.sqlite"},
                 },
@@ -24,7 +24,6 @@ class ConfigContractTests(unittest.TestCase):
         )
         self.assertEqual(cfg.corpus.db_path, "index/custom.sqlite")
         self.assertEqual(cfg.corpus.max_chars, 256)
-        self.assertEqual(cfg.corpus.overlap, 32)
         self.assertEqual(cfg.grounding.evidence_top_n, 4)
         self.assertEqual(cfg.memory.db_path, "memory/custom.sqlite")
 

@@ -29,6 +29,16 @@ from agent.embeddings_db import (
     set_meta as set_embeddings_meta,
     upsert_embedding,
 )
+from agent.manifests import (
+    append_manifest_index,
+    git_info,
+    stable_settings_hash,
+    system_info,
+    utc_iso,
+    utc_now,
+    write_run_manifest,
+)
+from datetime import datetime
 
 
 def ensure_runtime_dirs(security_root: Path) -> None:
@@ -174,6 +184,95 @@ def _summarize_embedding_drift(
     return to_process, missing, outdated, skipped_ok
 
 
+def _finalize_embedding_run(
+    *,
+    security_root: Path,
+    started_at: datetime,
+    start_perf: float,
+    app_config: AppConfig,
+    rebuild: bool,
+    dry_run: bool,
+    result: EmbeddingSyncResult,
+) -> EmbeddingSyncResult:
+    finished_at = utc_now()
+    duration_s = time.perf_counter() - start_perf
+    settings_payload = {
+        "provider": result.provider,
+        "model_id": result.model_id,
+        "dim": result.dim,
+        "chunk_preprocess_sig": result.chunk_preprocess_sig,
+        "query_preprocess_sig": result.query_preprocess_sig,
+        "embed_runtime_fingerprint": result.embed_runtime_fingerprint,
+        "rebuild": bool(rebuild),
+        "dry_run": bool(dry_run),
+    }
+    settings_hash_short, settings_hash_full = stable_settings_hash(settings_payload)
+    git_commit, git_dirty = git_info(security_root)
+    run_id = f"{started_at.strftime('%Y%m%d_%H%M%S')}_{settings_hash_short}"
+    payload = {
+        "run_id": run_id,
+        "kind": "embed",
+        "started_at_utc": utc_iso(started_at),
+        "finished_at_utc": utc_iso(finished_at),
+        "duration_s": duration_s,
+        "settings_for_hash": settings_payload,
+        "settings_hash_short": settings_hash_short,
+        "settings_hash_full": settings_hash_full,
+        "system": system_info(),
+        "repo": {"git_commit": git_commit, "git_dirty": git_dirty},
+        "input_provenance": {
+            "embeddings_db_path_abs": result.embeddings_db_path,
+        },
+        "outcomes": {
+            "total_chunks": result.total_chunks,
+            "existing_embeddings": result.existing_embeddings,
+            "embeddings_total_before": result.embeddings_total_before,
+            "embeddings_total_after": result.embeddings_total_after,
+            "orphan_embeddings_before": result.orphan_embeddings_before,
+            "orphan_embeddings_pruned": result.orphan_embeddings_pruned,
+            "missing": result.missing,
+            "outdated": result.outdated,
+            "embedded_written": result.embedded_written,
+            "skipped_ok": result.skipped_ok,
+            "errors_count": len(result.errors),
+        },
+    }
+    manifest_dir = security_root / "embeddings" / "manifests"
+    try:
+        manifest_path = write_run_manifest(
+            manifest_dir=manifest_dir,
+            kind="embed",
+            settings_hash_short=settings_hash_short,
+            finished_at=finished_at,
+            payload=payload,
+        )
+        append_manifest_index(
+            manifest_dir,
+            {
+                "manifest_filename": manifest_path.name,
+                "run_id": run_id,
+                "kind": "embed",
+                "started_at_utc": payload["started_at_utc"],
+                "finished_at_utc": payload["finished_at_utc"],
+                "duration_s": duration_s,
+                "settings_hash_short": settings_hash_short,
+                "provider": result.provider,
+                "model_id": result.model_id,
+                "dim": result.dim,
+                "embedded_written": result.embedded_written,
+                "missing": result.missing,
+                "outdated": result.outdated,
+                "orphan_embeddings_pruned": result.orphan_embeddings_pruned,
+                "errors_count": len(result.errors),
+                "git_commit": git_commit,
+                "git_dirty": git_dirty,
+            },
+        )
+    except Exception:
+        pass
+    return result
+
+
 def sync_embeddings(
     *,
     app_config: AppConfig,
@@ -186,6 +285,8 @@ def sync_embeddings(
     embedder_factory: Optional[Callable[..., Any]] = None,
 ) -> EmbeddingSyncResult:
     ensure_runtime_dirs(security_root)
+    started_at = utc_now()
+    start_perf = time.perf_counter()
     chunks = load_corpus_chunks(corpus_db_path)
     if limit is not None:
         chunks = chunks[: max(0, int(limit))]
@@ -212,26 +313,34 @@ def sync_embeddings(
                 orphan_embeddings_pruned = delete_orphan_embeddings(embed_conn, chunk_keys)
                 embeddings_total_after = count_embeddings(embed_conn)
                 embed_conn.commit()
-        return EmbeddingSyncResult(
-            total_chunks=0,
-            existing_embeddings=0,
-            embeddings_total_before=embeddings_total_before,
-            embeddings_total_after=embeddings_total_after,
-            orphan_embeddings_before=orphan_embeddings_before,
-            orphan_embeddings_pruned=orphan_embeddings_pruned,
-            missing=0,
-            outdated=0,
-            embedded_written=0,
-            skipped_ok=0,
-            errors=[],
-            dim=None,
-            provider=provider,
-            model_id=model_id,
-            embed_runtime_fingerprint="",
-            chunk_preprocess_sig=chunk_preprocess_sig,
-            query_preprocess_sig=query_preprocess_sig,
-            vectors_normalized=True,
-            embeddings_db_path=str(embeddings_db_path),
+        return _finalize_embedding_run(
+            security_root=security_root,
+            started_at=started_at,
+            start_perf=start_perf,
+            app_config=app_config,
+            rebuild=rebuild,
+            dry_run=dry_run,
+            result=EmbeddingSyncResult(
+                total_chunks=0,
+                existing_embeddings=0,
+                embeddings_total_before=embeddings_total_before,
+                embeddings_total_after=embeddings_total_after,
+                orphan_embeddings_before=orphan_embeddings_before,
+                orphan_embeddings_pruned=orphan_embeddings_pruned,
+                missing=0,
+                outdated=0,
+                embedded_written=0,
+                skipped_ok=0,
+                errors=[],
+                dim=None,
+                provider=provider,
+                model_id=model_id,
+                embed_runtime_fingerprint="",
+                chunk_preprocess_sig=chunk_preprocess_sig,
+                query_preprocess_sig=query_preprocess_sig,
+                vectors_normalized=True,
+                embeddings_db_path=str(embeddings_db_path),
+            ),
         )
 
     factory = embedder_factory
@@ -290,26 +399,34 @@ def sync_embeddings(
     )
 
     if dry_run:
-        return EmbeddingSyncResult(
-            total_chunks=total_chunks,
-            existing_embeddings=existing_embeddings,
-            embeddings_total_before=embeddings_total_before,
-            embeddings_total_after=embeddings_total_after,
-            orphan_embeddings_before=orphan_embeddings_before,
-            orphan_embeddings_pruned=orphan_embeddings_pruned,
-            missing=missing,
-            outdated=outdated,
-            embedded_written=0,
-            skipped_ok=skipped_ok,
-            errors=[],
-            dim=dim,
-            provider=provider,
-            model_id=model_id,
-            embed_runtime_fingerprint=runtime_fingerprint,
-            chunk_preprocess_sig=chunk_preprocess_sig,
-            query_preprocess_sig=query_preprocess_sig,
-            vectors_normalized=True,
-            embeddings_db_path=str(embeddings_db_path),
+        return _finalize_embedding_run(
+            security_root=security_root,
+            started_at=started_at,
+            start_perf=start_perf,
+            app_config=app_config,
+            rebuild=rebuild,
+            dry_run=dry_run,
+            result=EmbeddingSyncResult(
+                total_chunks=total_chunks,
+                existing_embeddings=existing_embeddings,
+                embeddings_total_before=embeddings_total_before,
+                embeddings_total_after=embeddings_total_after,
+                orphan_embeddings_before=orphan_embeddings_before,
+                orphan_embeddings_pruned=orphan_embeddings_pruned,
+                missing=missing,
+                outdated=outdated,
+                embedded_written=0,
+                skipped_ok=skipped_ok,
+                errors=[],
+                dim=dim,
+                provider=provider,
+                model_id=model_id,
+                embed_runtime_fingerprint=runtime_fingerprint,
+                chunk_preprocess_sig=chunk_preprocess_sig,
+                query_preprocess_sig=query_preprocess_sig,
+                vectors_normalized=True,
+                embeddings_db_path=str(embeddings_db_path),
+            ),
         )
 
     written = 0
@@ -386,24 +503,32 @@ def sync_embeddings(
         embeddings_total_after = count_embeddings(embed_conn)
         embed_conn.commit()
 
-    return EmbeddingSyncResult(
-        total_chunks=total_chunks,
-        existing_embeddings=existing_embeddings,
-        embeddings_total_before=embeddings_total_before,
-        embeddings_total_after=embeddings_total_after,
-        orphan_embeddings_before=orphan_embeddings_before,
-        orphan_embeddings_pruned=orphan_embeddings_pruned,
-        missing=missing,
-        outdated=outdated,
-        embedded_written=written,
-        skipped_ok=skipped_ok,
-        errors=errors,
-        dim=dim,
-        provider=provider,
-        model_id=model_id,
-        embed_runtime_fingerprint=runtime_fingerprint,
-        chunk_preprocess_sig=chunk_preprocess_sig,
-        query_preprocess_sig=query_preprocess_sig,
-        vectors_normalized=True,
-        embeddings_db_path=str(embeddings_db_path),
+    return _finalize_embedding_run(
+        security_root=security_root,
+        started_at=started_at,
+        start_perf=start_perf,
+        app_config=app_config,
+        rebuild=rebuild,
+        dry_run=dry_run,
+        result=EmbeddingSyncResult(
+            total_chunks=total_chunks,
+            existing_embeddings=existing_embeddings,
+            embeddings_total_before=embeddings_total_before,
+            embeddings_total_after=embeddings_total_after,
+            orphan_embeddings_before=orphan_embeddings_before,
+            orphan_embeddings_pruned=orphan_embeddings_pruned,
+            missing=missing,
+            outdated=outdated,
+            embedded_written=written,
+            skipped_ok=skipped_ok,
+            errors=errors,
+            dim=dim,
+            provider=provider,
+            model_id=model_id,
+            embed_runtime_fingerprint=runtime_fingerprint,
+            chunk_preprocess_sig=chunk_preprocess_sig,
+            query_preprocess_sig=query_preprocess_sig,
+            vectors_normalized=True,
+            embeddings_db_path=str(embeddings_db_path),
+        ),
     )

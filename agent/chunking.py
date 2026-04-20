@@ -2,7 +2,8 @@ from __future__ import annotations
 
 import hashlib
 import re
-from dataclasses import dataclass
+from collections import Counter, defaultdict
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Optional
@@ -33,6 +34,7 @@ class ChunkDraft:
     chunk_anchor: str
     chunk_title: str
     out_links: list[dict[str, str]]
+    section_ordinal: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -43,6 +45,7 @@ class Section:
     heading_path: list[str]
     text: str
     start_char: int
+    section_ordinal: Optional[int] = None
 
 
 @dataclass(frozen=True)
@@ -102,11 +105,19 @@ def stable_chunk_key(
     heading_path: list[str],
     section_index: int,
     chunk_index: int,
+    section_ordinal: Optional[int] = None,
 ) -> str:
     canonical_source = canonicalize_source_uri(source_uri)
     canonical_heading = " > ".join(canonicalize_heading_path(heading_path))
     kind = str(chunk_kind or CHUNK_KIND_CONTENT).strip().lower() or CHUNK_KIND_CONTENT
-    return sha256_text(f"{canonical_source}|{kind}|{canonical_heading}|{section_index}|{chunk_index}")[:32]
+    if section_ordinal is None:
+        material = f"{canonical_source}|{kind}|{canonical_heading}|{section_index}|{chunk_index}"
+    else:
+        material = (
+            f"{canonical_source}|{kind}|{canonical_heading}|"
+            f"{section_index}#{int(section_ordinal)}|{chunk_index}"
+        )
+    return sha256_text(material)[:32]
 
 
 def split_frontmatter(text: str) -> tuple[str, str]:
@@ -389,64 +400,63 @@ def split_into_sections(body_markdown: str) -> list[Section]:
         current_lines.append(line)
         offset += len(line) + 1
     flush()
-    return sections
+    return _assign_section_ordinals(sections)
 
 
-def _split_large_paragraph(
-    text: str,
+def _assign_section_ordinals(sections: list[Section]) -> list[Section]:
+    if not sections:
+        return sections
+    keys = [tuple(canonicalize_heading_path(section.heading_path)) for section in sections]
+    counts = Counter(keys)
+    seen: dict[tuple[str, ...], int] = defaultdict(int)
+    out: list[Section] = []
+    for section, key in zip(sections, keys):
+        if counts[key] > 1:
+            ordinal: Optional[int] = seen[key]
+            seen[key] += 1
+        else:
+            ordinal = None
+        out.append(replace(section, section_ordinal=ordinal))
+    return out
+
+
+_SENTENCE_SPLIT_RE = re.compile(r"(?<=[.!?])\s+")
+
+
+def _split_paragraph_by_sentences(
+    paragraph: str,
     *,
     base_offset: int,
     max_chars: int,
-    overlap: int,
 ) -> list[tuple[str, int, int]]:
-    if len(text) <= max_chars:
-        return [(text, base_offset, base_offset + len(text))]
-    boundary_re = re.compile(r"(?<=[.!?])(?:['\")\]]+)?\s+|[;:]\s+|\n")
-    min_boundary = max(1, int(max_chars * 0.5))
-    fragments: list[tuple[str, int, int]] = []
-    start = 0
-    text_len = len(text)
-    step = max(1, max_chars - overlap)
-    while start < text_len:
-        window_end = min(text_len, start + max_chars)
-        if window_end >= text_len:
-            end = text_len
+    sentences = [sent for sent in _SENTENCE_SPLIT_RE.split(paragraph) if sent]
+    if not sentences:
+        return [(paragraph, base_offset, base_offset + len(paragraph))]
+    pieces: list[tuple[str, int, int]] = []
+    buf = ""
+    buf_start = base_offset
+    cursor = base_offset
+    for sent in sentences:
+        addition = sent if not buf else f" {sent}"
+        if buf and len(buf) + len(addition) > max_chars:
+            pieces.append((buf, buf_start, buf_start + len(buf)))
+            buf = sent
+            buf_start = cursor
         else:
-            window = text[start:window_end]
-            candidates = [match.end() for match in boundary_re.finditer(window)]
-            good = [index for index in candidates if index >= min_boundary]
-            if good:
-                end = start + good[-1]
-            else:
-                ws = window.rfind(" ")
-                if ws >= min_boundary:
-                    end = start + ws + 1
-                else:
-                    end = window_end
-        if end <= start:
-            end = min(text_len, start + step)
-        piece = text[start:end].strip()
-        if piece:
-            fragments.append((piece, base_offset + start, base_offset + end))
-        if end >= text_len:
-            break
-        next_start = end - overlap
-        if next_start <= start:
-            next_start = end
-        start = next_start
-    return fragments
+            buf += addition
+        cursor += len(sent) + 1
+    if buf:
+        pieces.append((buf, buf_start, buf_start + len(buf)))
+    return pieces
 
 
 def build_markdown_chunks(
     *,
     body_text: str,
     max_chars: int,
-    overlap: int,
 ) -> list[ChunkDraft]:
     if max_chars <= 0:
         raise ValueError("max_chars must be > 0")
-    if overlap < 0 or overlap >= max_chars:
-        raise ValueError("overlap must be >= 0 and smaller than max_chars")
     if not body_text.strip():
         return []
 
@@ -460,73 +470,39 @@ def build_markdown_chunks(
         if not paragraphs:
             continue
 
-        draft_parts: list[tuple[str, int, int, list[dict[str, str]]]] = []
-        section_offset = section.start_char
-        cursor = section_offset
+        cursor = section.start_char
         for paragraph in paragraphs:
             paragraph_offset = cursor
-            paragraph_pieces = _split_large_paragraph(
-                paragraph,
-                base_offset=paragraph_offset,
-                max_chars=max_chars,
-                overlap=overlap,
-            )
-            for piece_text, start_char, end_char in paragraph_pieces:
+            paragraph_len = len(paragraph)
+            if paragraph_len <= max_chars:
+                pieces = [(paragraph, paragraph_offset, paragraph_offset + paragraph_len)]
+            else:
+                pieces = _split_paragraph_by_sentences(
+                    paragraph,
+                    base_offset=paragraph_offset,
+                    max_chars=max_chars,
+                )
+            for piece_text, start_char, end_char in pieces:
                 cleaned_text, out_links = replace_wikilinks_and_collect(piece_text)
                 cleaned_text = cleaned_text.strip()
-                if cleaned_text:
-                    draft_parts.append((cleaned_text, start_char, end_char, out_links))
-            cursor += len(paragraph) + 2
-
-        current_text = ""
-        current_links: list[dict[str, str]] = []
-        current_start = 0
-        current_end = 0
-        local_chunk_index = 0
-
-        def flush_current() -> None:
-            nonlocal current_text, current_links, current_start, current_end, local_chunk_index, global_chunk_index
-            if not current_text:
-                return
-            chunks.append(
-                ChunkDraft(
-                    chunk_index=global_chunk_index,
-                    section_index=section.section_index,
-                    start_char=current_start,
-                    end_char=current_end,
-                    text=current_text,
-                    heading_path=_format_heading_path(section.heading_path),
-                    chunk_anchor=section.anchor,
-                    chunk_title=section.title,
-                    out_links=list(current_links),
+                if not cleaned_text:
+                    continue
+                chunks.append(
+                    ChunkDraft(
+                        chunk_index=global_chunk_index,
+                        section_index=section.section_index,
+                        start_char=start_char,
+                        end_char=end_char,
+                        text=cleaned_text,
+                        heading_path=_format_heading_path(section.heading_path),
+                        chunk_anchor=section.anchor,
+                        chunk_title=section.title,
+                        out_links=out_links,
+                        section_ordinal=section.section_ordinal,
+                    )
                 )
-            )
-            local_chunk_index += 1
-            global_chunk_index += 1
-            current_text = ""
-            current_links = []
-            current_start = 0
-            current_end = 0
-
-        for piece_text, start_char, end_char, out_links in draft_parts:
-            if not current_text:
-                current_text = piece_text
-                current_start = start_char
-                current_end = end_char
-                current_links = list(out_links)
-                continue
-            combined = f"{current_text}\n\n{piece_text}"
-            if len(combined) <= max_chars:
-                current_text = combined
-                current_end = end_char
-                current_links.extend(out_links)
-            else:
-                flush_current()
-                current_text = piece_text
-                current_start = start_char
-                current_end = end_char
-                current_links = list(out_links)
-        flush_current()
+                global_chunk_index += 1
+            cursor += paragraph_len + 2
 
     return chunks
 

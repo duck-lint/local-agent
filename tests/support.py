@@ -64,7 +64,6 @@ class AppFixture:
                 "corpus": {
                     "db_path": "index/index.sqlite",
                     "max_chars": 120,
-                    "overlap": 20,
                 },
                 "embeddings": {
                     "provider": "torch",

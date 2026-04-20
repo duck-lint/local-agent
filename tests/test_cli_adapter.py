@@ -53,7 +53,7 @@ class _StubApp:
             error_message=None,
         )
 
-    def ingest_corpus(self, *, force_rebuild: bool = False):
+    def ingest_corpus(self, *, force_rebuild: bool = False, stage_dump_dir=None):
         return SimpleNamespace(
             errors=[],
             corpus_db_path="index/index.sqlite",

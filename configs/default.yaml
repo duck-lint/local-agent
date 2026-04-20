@@ -44,7 +44,6 @@ corpus:
       root: "allowed/scratch/"
       kind: scratch
   max_chars: 1200
-  overlap: 120
 embeddings:
   db_path: "embeddings/db/embeddings.sqlite"
   provider: "torch"
