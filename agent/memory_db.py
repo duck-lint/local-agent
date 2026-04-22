@@ -77,6 +77,24 @@ def init_db(db_path: Path) -> None:
             )
             conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
             set_meta(conn, "schema_version", str(SCHEMA_VERSION))
+        # Phase 4 sidecar: created opportunistically; does not bump SCHEMA_VERSION
+        # so that test_memory_contract.py's assertion of payload.schema_version == 2
+        # continues to hold for the export payload.
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS memory_promotion (
+                memory_id TEXT PRIMARY KEY REFERENCES memory(memory_id) ON DELETE CASCADE,
+                session_id TEXT NOT NULL,
+                triggering_query_ids TEXT NOT NULL,
+                evidence_bundle_ids TEXT NOT NULL,
+                promoted_by TEXT NOT NULL,
+                promoted_at REAL NOT NULL,
+                payload_json TEXT NOT NULL
+            );
+
+            CREATE INDEX IF NOT EXISTS idx_memory_promotion_session ON memory_promotion(session_id);
+            """
+        )
         conn.commit()
 
 
@@ -217,3 +235,116 @@ def export_memory(
 def iter_evidence_chunk_keys(conn: sqlite3.Connection) -> list[str]:
     rows = conn.execute("SELECT DISTINCT chunk_key FROM memory_evidence ORDER BY chunk_key").fetchall()
     return [str(row["chunk_key"]) for row in rows]
+
+
+# --- Phase 4: promotion provenance (sidecar table) ---------------------------
+
+ALLOWED_PROMOTED_BY = {"user", "llm_suggested_user_confirmed"}
+
+
+def add_promoted_memory(
+    conn: sqlite3.Connection,
+    *,
+    memory_type: str,
+    content: str,
+    chunk_keys: Iterable[str],
+    session_id: str,
+    triggering_query_ids: Iterable[str],
+    evidence_bundle_ids: Iterable[str],
+    promoted_by: str,
+    payload: Optional[dict] = None,
+    allowed_chunk_keys: Optional[Iterable[str]] = None,
+    memory_id: Optional[str] = None,
+) -> str:
+    """Insert a promoted memory record + sidecar provenance row.
+
+    Validates promoted_by; reuses add_memory(source='derived_from_evidence') so
+    chunk_key validation, ALLOWED_MEMORY_TYPES checks, and timestamps stay
+    consistent with manual entries.
+    """
+    promoted_by = (promoted_by or "").strip()
+    if promoted_by not in ALLOWED_PROMOTED_BY:
+        raise ValueError(f"Unsupported promoted_by: {promoted_by!r}")
+    sid = (session_id or "").strip()
+    if not sid:
+        raise ValueError("session_id must be non-empty")
+    record_id = add_memory(
+        conn,
+        memory_type=memory_type,
+        content=content,
+        source="derived_from_evidence",
+        chunk_keys=chunk_keys,
+        allowed_chunk_keys=allowed_chunk_keys,
+        memory_id=memory_id,
+    )
+    triggering_ids = sorted({str(x).strip() for x in triggering_query_ids if str(x).strip()})
+    bundle_ids = sorted({str(x).strip() for x in evidence_bundle_ids if str(x).strip()})
+    conn.execute(
+        """
+        INSERT INTO memory_promotion(
+            memory_id, session_id, triggering_query_ids,
+            evidence_bundle_ids, promoted_by, promoted_at, payload_json
+        ) VALUES (?, ?, ?, ?, ?, ?, ?)
+        """,
+        (
+            record_id,
+            sid,
+            json.dumps(triggering_ids, ensure_ascii=False),
+            json.dumps(bundle_ids, ensure_ascii=False),
+            promoted_by,
+            time.time(),
+            json.dumps(payload or {}, ensure_ascii=False),
+        ),
+    )
+    return record_id
+
+
+def get_promotion_provenance(
+    conn: sqlite3.Connection, memory_id: str
+) -> Optional[dict[str, object]]:
+    row = conn.execute(
+        """
+        SELECT memory_id, session_id, triggering_query_ids,
+               evidence_bundle_ids, promoted_by, promoted_at, payload_json
+        FROM memory_promotion WHERE memory_id = ?
+        """,
+        (memory_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    try:
+        triggering_ids = json.loads(row["triggering_query_ids"])
+    except (TypeError, ValueError):
+        triggering_ids = []
+    try:
+        bundle_ids = json.loads(row["evidence_bundle_ids"])
+    except (TypeError, ValueError):
+        bundle_ids = []
+    try:
+        payload = json.loads(row["payload_json"])
+    except (TypeError, ValueError):
+        payload = {}
+    return {
+        "memory_id": str(row["memory_id"]),
+        "session_id": str(row["session_id"]),
+        "triggering_query_ids": list(triggering_ids),
+        "evidence_bundle_ids": list(bundle_ids),
+        "promoted_by": str(row["promoted_by"]),
+        "promoted_at": float(row["promoted_at"]),
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
+def list_promotions_for_session(
+    conn: sqlite3.Connection, session_id: str
+) -> list[dict[str, object]]:
+    rows = conn.execute(
+        "SELECT memory_id FROM memory_promotion WHERE session_id = ? ORDER BY promoted_at, memory_id",
+        ((session_id or "").strip(),),
+    ).fetchall()
+    out: list[dict[str, object]] = []
+    for row in rows:
+        prov = get_promotion_provenance(conn, str(row["memory_id"]))
+        if prov is not None:
+            out.append(prov)
+    return out

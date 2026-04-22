@@ -1,0 +1,258 @@
+
+=================================== ERRORS ====================================
+____________________ ERROR collecting tests/test_budget.py ____________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_budget.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_budget.py:6: in <module>
+    from agent.budget import BudgetExceededError, BudgetTracker
+E   ModuleNotFoundError: No module named 'agent'
+_________________ ERROR collecting tests/test_cli_adapter.py __________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_cli_adapter.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_cli_adapter.py:15: in <module>
+    from agent.cli import build_parser, main
+E   ModuleNotFoundError: No module named 'agent'
+_______________ ERROR collecting tests/test_config_contract.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_config_contract.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_config_contract.py:5: in <module>
+    from agent.config import build_app_config, deep_merge_config, DEFAULT_CONFIG
+E   ModuleNotFoundError: No module named 'agent'
+_______________ ERROR collecting tests/test_corpus_contract.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_corpus_contract.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_corpus_contract.py:7: in <module>
+    from agent.corpus import sync_corpus
+E   ModuleNotFoundError: No module named 'agent'
+___________________ ERROR collecting tests/test_coverage.py ___________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_coverage.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_coverage.py:5: in <module>
+    from agent.coverage import CoverageScore, compute_coverage
+E   ModuleNotFoundError: No module named 'agent'
+____________________ ERROR collecting tests/test_daemon.py ____________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_daemon.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_daemon.py:6: in <module>
+    from agent.daemon.client import DaemonClient, DaemonUnreachableError
+E   ModuleNotFoundError: No module named 'agent'
+________________ ERROR collecting tests/test_doctor_runtime.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_doctor_runtime.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_doctor_runtime.py:7: in <module>
+    from agent.chunking import LEXICAL_PROJECTION_VERSION, METADATA_PROJECTION_VERSION
+E   ModuleNotFoundError: No module named 'agent'
+__________________ ERROR collecting tests/test_manifests.py ___________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_manifests.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_manifests.py:6: in <module>
+    from agent.manifests import (
+E   ModuleNotFoundError: No module named 'agent'
+_______________ ERROR collecting tests/test_memory_contract.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_memory_contract.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_memory_contract.py:6: in <module>
+    from agent.corpus_db import connect_db as connect_corpus_db
+E   ModuleNotFoundError: No module named 'agent'
+______________ ERROR collecting tests/test_neighbor_expansion.py ______________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_neighbor_expansion.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_neighbor_expansion.py:5: in <module>
+    from agent.corpus_db import connect_db, fetch_neighbor_chunks
+E   ModuleNotFoundError: No module named 'agent'
+____________ ERROR collecting tests/test_phase4_coverage_memory.py ____________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_phase4_coverage_memory.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_phase4_coverage_memory.py:7: in <module>
+    from agent.coverage import compute_coverage
+E   ModuleNotFoundError: No module named 'agent'
+___________ ERROR collecting tests/test_phase4_memory_isolation.py ____________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_phase4_memory_isolation.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_phase4_memory_isolation.py:9: in <module>
+    from agent.embeddings import sync_embeddings
+E   ModuleNotFoundError: No module named 'agent'
+_______________ ERROR collecting tests/test_phase4_promotion.py _______________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_phase4_promotion.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_phase4_promotion.py:9: in <module>
+    from agent.corpus_db import connect_db as connect_corpus_db, list_chunk_keys
+E   ModuleNotFoundError: No module named 'agent'
+____________ ERROR collecting tests/test_phase4_rewrite_memory.py _____________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_phase4_rewrite_memory.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_phase4_rewrite_memory.py:7: in <module>
+    from agent.rewrite import rule_based_rewrite
+E   ModuleNotFoundError: No module named 'agent'
+__________________ ERROR collecting tests/test_refinement.py __________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_refinement.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_refinement.py:7: in <module>
+    from tests.support import AppFixture, dummy_embedder_factory
+E   ModuleNotFoundError: No module named 'tests'
+______________ ERROR collecting tests/test_retrieval_contract.py ______________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_retrieval_contract.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_retrieval_contract.py:8: in <module>
+    from agent.corpus_db import _query_chunk_search_fallback
+E   ModuleNotFoundError: No module named 'agent'
+___________________ ERROR collecting tests/test_rewrite.py ____________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_rewrite.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_rewrite.py:5: in <module>
+    from agent.rewrite import RewrittenQuery, rule_based_rewrite
+E   ModuleNotFoundError: No module named 'agent'
+_______________ ERROR collecting tests/test_run_log_session.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_run_log_session.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_run_log_session.py:9: in <module>
+    from agent.embeddings import sync_embeddings
+E   ModuleNotFoundError: No module named 'agent'
+________________ ERROR collecting tests/test_run_log_shape.py _________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_run_log_shape.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_run_log_shape.py:7: in <module>
+    from tests.support import AppFixture, dummy_embedder_factory
+E   ModuleNotFoundError: No module named 'tests'
+_________________ ERROR collecting tests/test_runtime_app.py __________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_runtime_app.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_runtime_app.py:7: in <module>
+    from agent import grounding as grounding_module
+E   ModuleNotFoundError: No module named 'agent'
+________________ ERROR collecting tests/test_session_memory.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_session_memory.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_session_memory.py:6: in <module>
+    from agent.session_memory import (
+E   ModuleNotFoundError: No module named 'agent'
+__________________ ERROR collecting tests/test_stage_dump.py __________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_stage_dump.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_stage_dump.py:7: in <module>
+    from agent.stage_dump import StageDumper
+E   ModuleNotFoundError: No module named 'agent'
+________________ ERROR collecting tests/test_tools_security.py ________________
+ImportError while importing test module 'C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent\tests\test_tools_security.py'.
+Hint: make sure your test modules/packages have valid Python names.
+Traceback:
+..\..\..\..\AppData\Local\Programs\Python\Python311\Lib\importlib\__init__.py:126: in import_module
+    return _bootstrap._gcd_import(name[level:], package, level)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+tests\test_tools_security.py:5: in <module>
+    from agent.tools import TOOLS, ToolError, get_read_text_file_policy, resolve_and_validate_path
+E   ModuleNotFoundError: No module named 'agent'
+=========================== short test summary info ===========================
+ERROR tests/test_budget.py
+ERROR tests/test_cli_adapter.py
+ERROR tests/test_config_contract.py
+ERROR tests/test_corpus_contract.py
+ERROR tests/test_coverage.py
+ERROR tests/test_daemon.py
+ERROR tests/test_doctor_runtime.py
+ERROR tests/test_manifests.py
+ERROR tests/test_memory_contract.py
+ERROR tests/test_neighbor_expansion.py
+ERROR tests/test_phase4_coverage_memory.py
+ERROR tests/test_phase4_memory_isolation.py
+ERROR tests/test_phase4_promotion.py
+ERROR tests/test_phase4_rewrite_memory.py
+ERROR tests/test_refinement.py
+ERROR tests/test_retrieval_contract.py
+ERROR tests/test_rewrite.py
+ERROR tests/test_run_log_session.py
+ERROR tests/test_run_log_shape.py
+ERROR tests/test_runtime_app.py
+ERROR tests/test_session_memory.py
+ERROR tests/test_stage_dump.py
+ERROR tests/test_tools_security.py
+!!!!!!!!!!!!!!!!!! Interrupted: 23 errors during collection !!!!!!!!!!!!!!!!!!!
+23 errors in 0.19s

@@ -336,6 +336,7 @@ def run_doctor(
                     vector_fetch_k=app_config.retrieval.vector_fetch_k,
                     rel_path_prefix=app_config.retrieval.rel_path_prefix,
                     fusion=app_config.retrieval.fusion,
+                    rrf_k=app_config.retrieval.rrf_k,
                 )
                 if result.candidates:
                     checks.append(_ok("DOCTOR_RETRIEVAL_READY", "Retrieval smoke returned candidates."))

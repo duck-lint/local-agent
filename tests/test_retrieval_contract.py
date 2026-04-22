@@ -264,6 +264,100 @@ class RetrievalContractTests(unittest.TestCase):
         self.assertEqual(reranked[0].chunk_key, "newer-mtime")
 
 
+class FusionStrategyTests(unittest.TestCase):
+    """Unit tests for _fuse_candidates: simple_union vs rrf."""
+
+    def _meta(self, key: str) -> dict[str, object]:
+        return {
+            "doc_key": f"doc-{key}",
+            "chunk_kind": "content",
+            "rel_path": f"{key}.md",
+            "heading_path": "",
+            "chunk_anchor": "",
+            "chunk_title": key.title(),
+            "text": f"text for {key}",
+            "note_type": "",
+            "journal_entry_date": "",
+            "mtime": 0.0,
+        }
+
+    def test_simple_union_orders_by_average_score_with_both_first(self) -> None:
+        from agent.retrieval import _fuse_candidates
+
+        # A: lex only (high). B: vec only (high). C: in both (mid+mid).
+        lexical_ranked = {"A": 1.0, "C": 0.6}
+        vector_ranked = {"B": 1.0, "C": 0.7}
+        lexical_meta = {k: self._meta(k) for k in ("A", "B", "C")}
+
+        with patch("agent.retrieval._fetch_chunk_metadata", return_value={}):
+            out = _fuse_candidates(
+                corpus_db_path=__import__("pathlib").Path("/dev/null"),
+                lexical_ranked=lexical_ranked,
+                lexical_meta=lexical_meta,
+                vector_ranked=vector_ranked,
+                lexical_ranks={"A": 1, "C": 2},
+                vector_ranks={"B": 1, "C": 2},
+                strategy="simple_union",
+            )
+
+        # "both" sorts ahead of single-source regardless of score.
+        self.assertEqual(out[0].chunk_key, "C")
+        self.assertEqual(out[0].method, "both")
+        self.assertAlmostEqual(out[0].score, (0.6 + 0.7) / 2.0)
+        single = {c.chunk_key: c for c in out[1:]}
+        self.assertEqual(set(single.keys()), {"A", "B"})
+        self.assertEqual(single["A"].method, "lexical")
+        self.assertAlmostEqual(single["A"].score, 1.0)
+        self.assertEqual(single["B"].method, "vector")
+        self.assertAlmostEqual(single["B"].score, 1.0)
+
+    def test_rrf_uses_rank_positions_not_raw_scores(self) -> None:
+        from agent.retrieval import _fuse_candidates
+
+        # A is rank-1 in BOTH lists, even though its mock scores are lower.
+        # B is only in lex (rank 2). C is only in vec (rank 2).
+        lexical_ranked = {"A": 0.1, "B": 0.05}
+        vector_ranked = {"A": 0.1, "C": 0.05}
+        lexical_ranks = {"A": 1, "B": 2}
+        vector_ranks = {"A": 1, "C": 2}
+        lexical_meta = {k: self._meta(k) for k in ("A", "B", "C")}
+
+        with patch("agent.retrieval._fetch_chunk_metadata", return_value={}):
+            out = _fuse_candidates(
+                corpus_db_path=__import__("pathlib").Path("/dev/null"),
+                lexical_ranked=lexical_ranked,
+                lexical_meta=lexical_meta,
+                vector_ranked=vector_ranked,
+                lexical_ranks=lexical_ranks,
+                vector_ranks=vector_ranks,
+                strategy="rrf",
+                rrf_k=60,
+            )
+
+        scores = {c.chunk_key: c.score for c in out}
+        # A appears in both -> 2 * 1/(60+1) = 2/61
+        self.assertAlmostEqual(scores["A"], 2.0 / 61.0)
+        # B only in lex at rank 2 -> 1/(60+2) = 1/62
+        self.assertAlmostEqual(scores["B"], 1.0 / 62.0)
+        # C only in vec at rank 2 -> 1/62
+        self.assertAlmostEqual(scores["C"], 1.0 / 62.0)
+        # Top by sort key (method=='both' first, then -score) is A.
+        self.assertEqual(out[0].chunk_key, "A")
+        self.assertEqual(out[0].method, "both")
+
+    def test_unsupported_strategy_raises(self) -> None:
+        from agent.retrieval import _fuse_candidates
+
+        with self.assertRaises(ValueError):
+            _fuse_candidates(
+                corpus_db_path=__import__("pathlib").Path("/dev/null"),
+                lexical_ranked={},
+                lexical_meta={},
+                vector_ranked={},
+                strategy="rerank",
+            )
+
+
 class FallbackLimitRegressionTests(unittest.TestCase):
     """Regression tests asserting that _query_chunk_search_fallback respects its LIMIT."""
 

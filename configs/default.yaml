@@ -1,6 +1,6 @@
 model: qwen2.5:14b-instruct
 model_fast: qwen2.5:14b-instruct
-model_big: qwen2.5:14b-instruct
+model_big: gpt-oss:20b
 prefer_fast: true
 big_triggers:
   - deep
@@ -15,7 +15,7 @@ big_triggers:
 # then this config value, then the built-in default below.
 ollama_base_url: http://127.0.0.1:11434
 max_tokens: 800
-max_tokens_big_second: 4500
+max_tokens_big_second: 1200
 temperature: 0.2
 timeout_s: 300
 timeout_s_big_second: 600
@@ -73,11 +73,33 @@ retrieval:
   #   vector_k: 20
   #   vector_fetch_k: 40
   # and only use higher values for explicit "high recall" runs or profiles.
-  lexical_k: 40
-  vector_k: 40
-  vector_fetch_k: 60
+  lexical_k: 20
+  vector_k: 20
+  vector_fetch_k: 40
   rel_path_prefix: ""
+  # fusion: how lexical + vector hit-lists are merged.
+  #   "simple_union" (default): average of normalized scores when both rank a chunk,
+  #     otherwise the single available score. Stable, score-aware.
+  #   "rrf": Reciprocal Rank Fusion. score = sum_r 1/(rrf_k + rank_r). Score-blind,
+  #     robust to mismatched score distributions across rankers.
   fusion: "simple_union"
+  rrf_k: 60
+  # Phase 1 neighbor expansion (off by default to preserve current behavior).
+  # neighbor_scope: adjacent_only | same_section | same_heading_path
+  neighbor_expansion_enabled: false
+  neighbor_scope: "adjacent_only"
+  # Phase 2 refinement loop + rule-based query rewrite (both off by default
+  # to preserve current behavior). When refinement is on, a coverage predicate
+  # decides whether to run a second retrieval round with a rewritten query.
+  refinement_round_enabled: false
+  coverage_predicate:
+    lexical_threshold: 0.5
+    vector_threshold: 0.5
+    memory_weight: 0.0
+    top_n: 10
+  rewrite:
+    rule_based_enabled: false
+    acronyms_path: "configs/acronyms.yaml"
 grounding:
   # Increased from the default (8) to 15 to improve citation robustness.
   # This may increase prompt size, model latency, and cost. Operators can
@@ -97,3 +119,25 @@ runs:
 memory:
   db_path: "memory/durable.sqlite"
   enabled: true
+# Phase 3 daemon + ephemeral session memory. Both default to OFF so the CLI
+# behaves identically to Phase 2. When session.enabled is true and you invoke
+# CLI commands with --session, daemon.enabled must also be true (or
+# session.require_daemon_for_cli set to false for in-process mode).
+daemon:
+  enabled: true
+  bind_host: "127.0.0.1"
+  bind_port: 47921
+  idle_timeout_s: 1800
+  request_timeout_s: 5
+session:
+  enabled: true
+  sessions_dir: "sessions"
+  topic_summary_top_k: 8
+  max_active_refs: 10
+  max_bundle_ids: 5
+  require_daemon_for_cli: true
+  memory_rewrite_enabled: false
+  coverage_memory_weight: 0.0
+  promotion:
+    enabled: false
+    llm_suggest_enabled: false

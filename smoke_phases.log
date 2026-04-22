@@ -1,0 +1,125 @@
+[smoke] repo  = C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent
+[smoke] work  = C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot
+[smoke] py    = C:\Users\madis\AppData\Local\Programs\Python\Python314\python.exe
+
+=== PHASE 0 ù baseline (all flags off) ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast what do the pillars describe
+  [PASS] phase0.ask_exits_0 :: rc=0 stderr_tail=
+  [PASS] phase0.run_json_emitted
+  [PASS] phase0.has_retrieval_results
+  [PASS] phase0.baseline_single_round :: rounds=1 refinement_applied=False
+  [PASS] phase0.coverage_null
+  [PASS] phase0.memory_snapshot_null
+  [PASS] phase0.budget_present
+
+=== PHASE 0b ù fusion: rrf ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast what do the pillars describe
+  [PASS] phase0_rrf.ask_exits_0 :: rc=0 stderr_tail=
+  [PASS] phase0_rrf.run_json_emitted
+  [PASS] phase0_rrf.has_retrieval_results :: n=15
+  [PASS] phase0_rrf.top_score_in_rrf_range :: top_merged_score=0.016393
+
+=== PHASE 1 ù neighbor expansion (adjacent_only) ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast what do the pillars describe
+  [PASS] phase1.ask_exits_0 :: rc=0
+  [PASS] phase1.run_json_emitted
+  [PASS] phase1.has_retrieval_rounds :: rounds=1
+  [PASS] phase1.neighbor_expansion_applied :: applied=True scope='adjacent_only'
+  [PASS] phase1.neighbor_chunks_added_counter_present :: neighbor_chunks_added=45
+
+=== PHASE 2 ù refinement + coverage + rule-based rewrite ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast yt pillars
+  [PASS] phase2.ask_exits_0 :: rc=0
+  [PASS] phase2.run_json_emitted
+  [PASS] phase2.coverage_populated :: keys=['lexical_token_coverage', 'vector_top_score', 'memory_overlap', 'lexical_threshold', 'vector_threshold', 'memory_weight', 'should_refine', 'query_token_count', 'matched_token_count', 'chunks_considered', 'notes']
+  [PASS] phase2.retrieval_rounds_logged :: rounds=2
+  [PASS] phase2.refinement_fired :: applied=True rounds=2
+  [PASS] phase2.rewrite_expanded_acronym :: rewritten='yt pillars youtube'
+
+=== PHASE 3 ù daemon lifecycle + session snapshot ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast --session smoke-s1-20260420-190313 what are the pillars
+  [PASS] phase3.turn1_ok :: rc=0
+  [PASS] phase3.memory_snapshot_present
+  [PASS] phase3.first_turn_cold :: turn=0
+  [PASS] phase3.state_persisted :: turn_after=1
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast --session smoke-s1-20260420-190313 what about coherence
+  [PASS] phase3.second_turn_sees_state :: turn_snap=1
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent session list --json
+  [PASS] phase3.session_list_ok :: {"ok": true, "session_ids": ["smoke-s1", "smoke-s1-20260420-180259", "smoke-s1-20260420-190313", "smoke-s2", "smoke-s2-2
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent session show smoke-s1-20260420-190313 --json
+  [PASS] phase3.session_show_ok :: {
+  "ok": true,
+  "state": {
+    "session_id": "smoke-s1-20260420-190313",
+    "
+  starting daemon subprocess...
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent daemon status --json
+  [PASS] phase3.daemon_starts :: status ok
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent daemon stop --json
+  [PASS] phase3.daemon_stop_ok
+
+=== PHASE 4 ù memory rewrite + coverage weight + promotion CLI ===
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast --session smoke-s2-20260420-190313 what are the pillars
+  [PASS] phase4.turn1_ok :: rc=0
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent ask --fast --session smoke-s2-20260420-190313 and what does this imply for my next video
+  [PASS] phase4.turn2_ok :: rc=0
+  [PASS] phase4.rewrite_skipped_when_no_refinement :: refinement_applied=False rounds=1 topic=['pillars', 'evidence', 'provided']
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent memory suggest --session smoke-s2-20260420-190313 --json
+  [PASS] phase4.memory_suggest_ok :: rc=0 out={"ok": true, "session_id": "smoke-s2-20260420-190313", "suggestions": [{"chunk_key": "f4f2167169ae0091564234e48de77f5f", "doc_key": "019bc983-8156-7254-815b-d2d
+  [PASS] phase4.memory_suggest_returned_refs :: n=10 first=f4f2167169ae0091564234e48de77f5f
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent memory promote --session smoke-s2-20260420-190313 --ref f4f2167169ae0091564234e48de77f5f --type user_fact --content smoke promotion note --yes --json
+  [PASS] phase4.memory_promote_explicit_ok :: rc=0 out={"ok": true, "memory_id": "e8c93998-cacc-4866-91ae-8c865919d21e", "session_id": "smoke-s2-20260420-190313", "promoted_by err=
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent memory list --json
+  [PASS] phase4.memory_list_ok
+  [PASS] phase4.promoted_record_visible :: len=831
+  $ C:\Users\madis\Projects\4. Agents & RAG\local-agent-main\local-agent-workroot\.venv\Scripts\python.exe -m agent memory promote --session smoke-s2-20260420-190313 --ref f4f2167169ae0091564234e48de77f5f --type user_fact --llm-suggest --json
+  [PASS] phase4.llm_suggest_dry_run_ok :: rc=0 tail=, "type": "user_fact", "content": "Promoted from session smoke-s2-20260420-190313: refs=f4f2167169ae0091564234e48de77f5f", "refs": ["f4f2167169ae0091564234e48de77f5f"]}, "requires_confirmation": true}
+
+
+======= SMOKE SUMMARY =======
+  [PASS] phase0.ask_exits_0 :: rc=0 stderr_tail=
+  [PASS] phase0.run_json_emitted
+  [PASS] phase0.has_retrieval_results
+  [PASS] phase0.baseline_single_round :: rounds=1 refinement_applied=False
+  [PASS] phase0.coverage_null
+  [PASS] phase0.memory_snapshot_null
+  [PASS] phase0.budget_present
+  [PASS] phase0_rrf.ask_exits_0 :: rc=0 stderr_tail=
+  [PASS] phase0_rrf.run_json_emitted
+  [PASS] phase0_rrf.has_retrieval_results :: n=15
+  [PASS] phase0_rrf.top_score_in_rrf_range :: top_merged_score=0.016393
+  [PASS] phase1.ask_exits_0 :: rc=0
+  [PASS] phase1.run_json_emitted
+  [PASS] phase1.has_retrieval_rounds :: rounds=1
+  [PASS] phase1.neighbor_expansion_applied :: applied=True scope='adjacent_only'
+  [PASS] phase1.neighbor_chunks_added_counter_present :: neighbor_chunks_added=45
+  [PASS] phase2.ask_exits_0 :: rc=0
+  [PASS] phase2.run_json_emitted
+  [PASS] phase2.coverage_populated :: keys=['lexical_token_coverage', 'vector_top_score', 'memory_overlap', 'lexical_threshold', 'vector_threshold', 'memory_weight', 'should_refine', 'query_token_count', 'matched_token_count', 'chunks_considered', 'notes']
+  [PASS] phase2.retrieval_rounds_logged :: rounds=2
+  [PASS] phase2.refinement_fired :: applied=True rounds=2
+  [PASS] phase2.rewrite_expanded_acronym :: rewritten='yt pillars youtube'
+  [PASS] phase3.turn1_ok :: rc=0
+  [PASS] phase3.memory_snapshot_present
+  [PASS] phase3.first_turn_cold :: turn=0
+  [PASS] phase3.state_persisted :: turn_after=1
+  [PASS] phase3.second_turn_sees_state :: turn_snap=1
+  [PASS] phase3.session_list_ok :: {"ok": true, "session_ids": ["smoke-s1", "smoke-s1-20260420-180259", "smoke-s1-20260420-190313", "smoke-s2", "smoke-s2-2
+  [PASS] phase3.session_show_ok :: {
+  "ok": true,
+  "state": {
+    "session_id": "smoke-s1-20260420-190313",
+    "
+  [PASS] phase3.daemon_starts :: status ok
+  [PASS] phase3.daemon_stop_ok
+  [PASS] phase4.turn1_ok :: rc=0
+  [PASS] phase4.turn2_ok :: rc=0
+  [PASS] phase4.rewrite_skipped_when_no_refinement :: refinement_applied=False rounds=1 topic=['pillars', 'evidence', 'provided']
+  [PASS] phase4.memory_suggest_ok :: rc=0 out={"ok": true, "session_id": "smoke-s2-20260420-190313", "suggestions": [{"chunk_key": "f4f2167169ae0091564234e48de77f5f", "doc_key": "019bc983-8156-7254-815b-d2d
+  [PASS] phase4.memory_suggest_returned_refs :: n=10 first=f4f2167169ae0091564234e48de77f5f
+  [PASS] phase4.memory_promote_explicit_ok :: rc=0 out={"ok": true, "memory_id": "e8c93998-cacc-4866-91ae-8c865919d21e", "session_id": "smoke-s2-20260420-190313", "promoted_by err=
+  [PASS] phase4.memory_list_ok
+  [PASS] phase4.promoted_record_visible :: len=831
+  [PASS] phase4.llm_suggest_dry_run_ok :: rc=0 tail=, "type": "user_fact", "content": "Promoted from session smoke-s2-20260420-190313: refs=f4f2167169ae0091564234e48de77f5f", "refs": ["f4f2167169ae0091564234e48de77f5f"]}, "requires_confirmation": true}
+
+  TOTAL: 40 passed, 0 failed  (40 checks)

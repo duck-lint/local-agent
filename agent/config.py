@@ -15,7 +15,12 @@ from agent.app_types import (
     EmbeddingsTorchConfig,
     GroundingConfig,
     MemoryConfig,
+    CoveragePredicateConfig,
+    DaemonConfig,
+    PromotionConfig,
     RetrievalConfig,
+    RewriteConfig,
+    SessionConfig,
     RunsConfig,
     SecurityConfig,
     SourceConfig,
@@ -98,6 +103,19 @@ DEFAULT_CONFIG: dict[str, Any] = {
         "vector_fetch_k": 0,
         "rel_path_prefix": "",
         "fusion": "simple_union",
+        "neighbor_expansion_enabled": False,
+        "neighbor_scope": "adjacent_only",
+        "refinement_round_enabled": False,
+        "coverage_predicate": {
+            "lexical_threshold": 0.5,
+            "vector_threshold": 0.5,
+            "memory_weight": 0.0,
+            "top_n": 10,
+        },
+        "rewrite": {
+            "rule_based_enabled": False,
+            "acronyms_path": "configs/acronyms.yaml",
+        },
     },
     "grounding": {
         "evidence_top_n": 8,
@@ -117,6 +135,27 @@ DEFAULT_CONFIG: dict[str, Any] = {
     "memory": {
         "db_path": "memory/durable.sqlite",
         "enabled": True,
+    },
+    "daemon": {
+        "enabled": False,
+        "bind_host": "127.0.0.1",
+        "bind_port": 47921,
+        "idle_timeout_s": 1800,
+        "request_timeout_s": 5,
+    },
+    "session": {
+        "enabled": False,
+        "sessions_dir": "sessions",
+        "topic_summary_top_k": 8,
+        "max_active_refs": 10,
+        "max_bundle_ids": 5,
+        "require_daemon_for_cli": True,
+        "memory_rewrite_enabled": False,
+        "coverage_memory_weight": 0.0,
+        "promotion": {
+            "enabled": False,
+            "llm_suggest_enabled": False,
+        },
     },
 }
 
@@ -208,6 +247,35 @@ def _reject_obsolete_keys(obj: Any, *, path: str = "") -> None:
     elif isinstance(obj, list):
         for idx, item in enumerate(obj):
             _reject_obsolete_keys(item, path=f"{path}[{idx}]")
+
+
+def _load_acronyms_file(rel_or_abs_path: str) -> tuple[dict[str, str], dict[str, str]]:
+    """Load acronyms.yaml if it exists. Returns ({}, {}) silently on any failure.
+
+    The path is resolved against the repo root (parent of `agent/`). Operators
+    can override the path or omit the file entirely; missing maps default to
+    empty (rule_based_rewrite then becomes identity).
+    """
+    if not rel_or_abs_path:
+        return {}, {}
+    candidate = Path(rel_or_abs_path)
+    if not candidate.is_absolute():
+        repo_root = Path(__file__).resolve().parent.parent
+        candidate = repo_root / rel_or_abs_path
+    if not candidate.exists():
+        return {}, {}
+    try:
+        with candidate.open("r", encoding="utf-8") as handle:
+            data = yaml.safe_load(handle) or {}
+    except (OSError, yaml.YAMLError):
+        return {}, {}
+    if not isinstance(data, dict):
+        return {}, {}
+    acro_raw = data.get("acronyms") if isinstance(data.get("acronyms"), dict) else {}
+    syn_raw = data.get("synonyms") if isinstance(data.get("synonyms"), dict) else {}
+    acro = {str(k): str(v) for k, v in acro_raw.items() if isinstance(k, str) and isinstance(v, str)}
+    syn = {str(k): str(v) for k, v in syn_raw.items() if isinstance(k, str) and isinstance(v, str)}
+    return acro, syn
 
 
 def discover_config_path(
@@ -384,12 +452,47 @@ def build_app_config(raw_cfg: Mapping[str, Any]) -> AppConfig:
     )
 
     retrieval_raw = cfg.get("retrieval") if isinstance(cfg.get("retrieval"), dict) else {}
+    neighbor_scope = _string(retrieval_raw.get("neighbor_scope"), "adjacent_only")
+    valid_scopes = ("adjacent_only", "same_section", "same_heading_path")
+    if neighbor_scope not in valid_scopes:
+        raise ValueError(
+            f"retrieval.neighbor_scope must be one of {valid_scopes}, got {neighbor_scope!r}"
+        )
+    coverage_raw = retrieval_raw.get("coverage_predicate") if isinstance(retrieval_raw.get("coverage_predicate"), dict) else {}
+    coverage_predicate = CoveragePredicateConfig(
+        lexical_threshold=float(coverage_raw.get("lexical_threshold", 0.5)),
+        vector_threshold=float(coverage_raw.get("vector_threshold", 0.5)),
+        memory_weight=float(coverage_raw.get("memory_weight", 0.0)),
+        top_n=_as_int(coverage_raw.get("top_n"), 10),
+    )
+    rewrite_raw = retrieval_raw.get("rewrite") if isinstance(retrieval_raw.get("rewrite"), dict) else {}
+    rewrite_acronyms_path = _string(rewrite_raw.get("acronyms_path"), "configs/acronyms.yaml")
+    rewrite_acronyms, rewrite_synonyms = _load_acronyms_file(rewrite_acronyms_path)
+    # Inline overrides under retrieval.rewrite.acronyms / .synonyms take precedence.
+    inline_acro = rewrite_raw.get("acronyms") if isinstance(rewrite_raw.get("acronyms"), dict) else None
+    inline_syn = rewrite_raw.get("synonyms") if isinstance(rewrite_raw.get("synonyms"), dict) else None
+    if inline_acro:
+        rewrite_acronyms = {**rewrite_acronyms, **{str(k): str(v) for k, v in inline_acro.items()}}
+    if inline_syn:
+        rewrite_synonyms = {**rewrite_synonyms, **{str(k): str(v) for k, v in inline_syn.items()}}
+    rewrite_cfg = RewriteConfig(
+        rule_based_enabled=_as_bool(rewrite_raw.get("rule_based_enabled"), False),
+        acronyms_path=rewrite_acronyms_path,
+        acronyms=rewrite_acronyms,
+        synonyms=rewrite_synonyms,
+    )
     retrieval = RetrievalConfig(
         lexical_k=_as_int(retrieval_raw.get("lexical_k"), 20),
         vector_k=_as_int(retrieval_raw.get("vector_k"), 20),
         vector_fetch_k=_as_int(retrieval_raw.get("vector_fetch_k"), 0),
         rel_path_prefix=_string(retrieval_raw.get("rel_path_prefix")),
         fusion=_string(retrieval_raw.get("fusion"), "simple_union"),
+        rrf_k=max(1, _as_int(retrieval_raw.get("rrf_k"), 60)),
+        neighbor_expansion_enabled=bool(retrieval_raw.get("neighbor_expansion_enabled", False)),
+        neighbor_scope=neighbor_scope,
+        refinement_round_enabled=_as_bool(retrieval_raw.get("refinement_round_enabled"), False),
+        coverage_predicate=coverage_predicate,
+        rewrite=rewrite_cfg,
     )
 
     grounding_raw = cfg.get("grounding") if isinstance(cfg.get("grounding"), dict) else {}
@@ -424,6 +527,33 @@ def build_app_config(raw_cfg: Mapping[str, Any]) -> AppConfig:
         enabled=_as_bool(memory_raw.get("enabled"), True),
     )
 
+    daemon_raw = cfg.get("daemon") if isinstance(cfg.get("daemon"), dict) else {}
+    daemon = DaemonConfig(
+        enabled=_as_bool(daemon_raw.get("enabled"), False),
+        bind_host=_string(daemon_raw.get("bind_host"), "127.0.0.1"),
+        bind_port=_as_int(daemon_raw.get("bind_port"), 47921),
+        idle_timeout_s=_as_int(daemon_raw.get("idle_timeout_s"), 1800),
+        request_timeout_s=_as_int(daemon_raw.get("request_timeout_s"), 5),
+    )
+
+    session_raw = cfg.get("session") if isinstance(cfg.get("session"), dict) else {}
+    promotion_raw = session_raw.get("promotion") if isinstance(session_raw.get("promotion"), dict) else {}
+    promotion_cfg = PromotionConfig(
+        enabled=_as_bool(promotion_raw.get("enabled"), False),
+        llm_suggest_enabled=_as_bool(promotion_raw.get("llm_suggest_enabled"), False),
+    )
+    session = SessionConfig(
+        enabled=_as_bool(session_raw.get("enabled"), False),
+        sessions_dir=_string(session_raw.get("sessions_dir"), "sessions"),
+        topic_summary_top_k=_as_int(session_raw.get("topic_summary_top_k"), 8),
+        max_active_refs=_as_int(session_raw.get("max_active_refs"), 10),
+        max_bundle_ids=_as_int(session_raw.get("max_bundle_ids"), 5),
+        require_daemon_for_cli=_as_bool(session_raw.get("require_daemon_for_cli"), True),
+        memory_rewrite_enabled=_as_bool(session_raw.get("memory_rewrite_enabled"), False),
+        coverage_memory_weight=_as_float(session_raw.get("coverage_memory_weight"), 0.0),
+        promotion=promotion_cfg,
+    )
+
     return AppConfig(
         model=_string(cfg.get("model"), DEFAULT_CONFIG["model"]),
         model_fast=_string(cfg.get("model_fast"), _string(cfg.get("model"), DEFAULT_CONFIG["model"])),
@@ -451,6 +581,8 @@ def build_app_config(raw_cfg: Mapping[str, Any]) -> AppConfig:
         grounding=grounding,
         runs=runs,
         memory=memory,
+        daemon=daemon,
+        session=session,
     )
 
 

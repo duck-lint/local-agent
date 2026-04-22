@@ -911,3 +911,128 @@ def fetch_existing_chunk_keys(
         keys,
     ).fetchall()
     return {str(row["chunk_key"]) for row in rows}
+
+
+_NEIGHBOR_SCOPES = ("adjacent_only", "same_section", "same_heading_path")
+
+
+def fetch_neighbor_chunks(
+    conn: sqlite3.Connection,
+    *,
+    chunk_keys: list[str],
+    scope: str,
+) -> list[dict]:
+    """Return neighbor chunks for the given chunk_keys.
+
+    Scopes:
+      - adjacent_only: chunks at chunk_index in {idx-1, idx+1} within the same doc.
+      - same_section: chunks sharing (doc_id, section_index, section_ordinal).
+      - same_heading_path: chunks sharing (doc_id, heading_path).
+
+    Excludes the input chunk_keys from results. Deduplicated by chunk_key.
+    Each result dict has: chunk_key, doc_key, chunk_kind, rel_path, heading_path,
+    chunk_anchor, chunk_title, text, chunk_index, section_index, section_ordinal.
+    """
+    if scope not in _NEIGHBOR_SCOPES:
+        raise ValueError(
+            f"Unknown neighbor scope: {scope!r} (expected one of {_NEIGHBOR_SCOPES})"
+        )
+
+    clean_keys = sorted({str(k).strip() for k in chunk_keys if str(k).strip()})
+    if not clean_keys:
+        return []
+
+    placeholders = ",".join("?" * len(clean_keys))
+    input_rows = conn.execute(
+        f"""
+        SELECT doc_id, chunk_index, section_index, section_ordinal, heading_path, chunk_key
+        FROM chunks
+        WHERE chunk_key IN ({placeholders})
+        """,
+        clean_keys,
+    ).fetchall()
+    if not input_rows:
+        return []
+
+    neighbor_keys: set[str] = set()
+    for row in input_rows:
+        doc_id = row["doc_id"]
+        if scope == "adjacent_only":
+            for idx in (int(row["chunk_index"]) - 1, int(row["chunk_index"]) + 1):
+                hits = conn.execute(
+                    "SELECT chunk_key FROM chunks WHERE doc_id = ? AND chunk_index = ?",
+                    (doc_id, idx),
+                ).fetchall()
+                for h in hits:
+                    neighbor_keys.add(str(h["chunk_key"]))
+        elif scope == "same_section":
+            section_ordinal = row["section_ordinal"]
+            if section_ordinal is None:
+                hits = conn.execute(
+                    "SELECT chunk_key FROM chunks WHERE doc_id = ? AND section_index = ? AND section_ordinal IS NULL",
+                    (doc_id, int(row["section_index"])),
+                ).fetchall()
+            else:
+                hits = conn.execute(
+                    "SELECT chunk_key FROM chunks WHERE doc_id = ? AND section_index = ? AND section_ordinal = ?",
+                    (doc_id, int(row["section_index"]), int(section_ordinal)),
+                ).fetchall()
+            for h in hits:
+                neighbor_keys.add(str(h["chunk_key"]))
+        else:  # same_heading_path
+            hits = conn.execute(
+                "SELECT chunk_key FROM chunks WHERE doc_id = ? AND heading_path = ?",
+                (doc_id, row["heading_path"]),
+            ).fetchall()
+            for h in hits:
+                neighbor_keys.add(str(h["chunk_key"]))
+
+    neighbor_keys -= set(clean_keys)
+    if not neighbor_keys:
+        return []
+
+    sorted_neighbor_keys = sorted(neighbor_keys)
+    nplaceholders = ",".join("?" * len(sorted_neighbor_keys))
+    nrows = conn.execute(
+        f"""
+        SELECT
+            chunks.chunk_key AS chunk_key,
+            chunks.doc_key AS doc_key,
+            chunks.chunk_kind AS chunk_kind,
+            documents.rel_path AS rel_path,
+            chunks.heading_path AS heading_path,
+            chunks.chunk_anchor AS chunk_anchor,
+            chunks.chunk_title AS chunk_title,
+            chunks.text AS text,
+            chunks.chunk_index AS chunk_index,
+            chunks.section_index AS section_index,
+            chunks.section_ordinal AS section_ordinal
+        FROM chunks
+        INNER JOIN documents ON documents.id = chunks.doc_id
+        WHERE chunks.chunk_key IN ({nplaceholders})
+        """,
+        sorted_neighbor_keys,
+    ).fetchall()
+
+    seen: set[str] = set()
+    out: list[dict] = []
+    for r in nrows:
+        ckey = str(r["chunk_key"])
+        if ckey in seen:
+            continue
+        seen.add(ckey)
+        out.append({
+            "chunk_key": ckey,
+            "doc_key": str(r["doc_key"]),
+            "chunk_kind": str(r["chunk_kind"]),
+            "rel_path": str(r["rel_path"]),
+            "heading_path": str(r["heading_path"]),
+            "chunk_anchor": str(r["chunk_anchor"]),
+            "chunk_title": str(r["chunk_title"]),
+            "text": str(r["text"]),
+            "chunk_index": int(r["chunk_index"]),
+            "section_index": int(r["section_index"]),
+            "section_ordinal": r["section_ordinal"],
+        })
+    return out
+

@@ -222,6 +222,7 @@ class LocalAgentApp:
         )
 
     def retrieve(self, query: str) -> RetrievalResult:
+        from agent.retrieval import expand_neighbors
         if self.config.embeddings.provider == "ollama":
             ensure_ollama_up(self.config.ollama_base_url, timeout_s=self.config.timeout_s)
         provider, model_id, preprocess_name, chunk_preprocess_sig, query_preprocess_sig, _ = (
@@ -243,7 +244,7 @@ class LocalAgentApp:
             base_url=self.config.ollama_base_url,
             timeout_s=self.config.timeout_s,
         )
-        return retrieve(
+        result = retrieve(
             query,
             corpus_db_path=self.corpus_db_path(),
             embeddings_db_path=self.embeddings_db_path(),
@@ -257,7 +258,15 @@ class LocalAgentApp:
             vector_fetch_k=self.config.retrieval.vector_fetch_k,
             rel_path_prefix=self.config.retrieval.rel_path_prefix,
             fusion=self.config.retrieval.fusion,
+            rrf_k=self.config.retrieval.rrf_k,
         )
+        if self.config.retrieval.neighbor_expansion_enabled:
+            result = expand_neighbors(
+                result,
+                corpus_db_path=self.corpus_db_path(),
+                scope=self.config.retrieval.neighbor_scope,
+            )
+        return result
 
     def lexical_query(self, query: str, *, limit: int = 5) -> list[dict[str, object]]:
         return lexical_query(db_path=self.corpus_db_path(), query_text=query, limit=limit)
@@ -268,6 +277,8 @@ class LocalAgentApp:
         *,
         force_big_second: bool = False,
         force_fast: bool = False,
+        session_id: str | None = None,
+        session_store: object | None = None,
     ) -> GroundedAnswerResult:
         first_model, second_model = select_models(
             self.config,
@@ -276,6 +287,20 @@ class LocalAgentApp:
             force_fast=force_fast,
         )
         _ = first_model
+        # Phase 3: when a --session was supplied but the caller did not provide
+        # an explicit session_store, default to an in-process FileSessionStore
+        # rooted at the workroot. This keeps programmatic callers (tests)
+        # ergonomic. CLI uses DaemonClient and passes that explicitly.
+        effective_store = session_store
+        if (
+            effective_store is None
+            and session_id
+            and self.config.session.enabled
+            and self.roots.workroot is not None
+        ):
+            from agent.session_memory import FileSessionStore  # local import to avoid cycles
+
+            effective_store = FileSessionStore(self.roots.workroot)
         try:
             return answer_grounded(
                 app_config=self.config,
@@ -285,6 +310,8 @@ class LocalAgentApp:
                 answer_model=second_model,
                 force_big_second=force_big_second,
                 force_fast=force_fast,
+                session_id=session_id,
+                session_store=effective_store,
             )
         except Exception as exc:
             run_dir = make_run_dir(self.roots.security_root)

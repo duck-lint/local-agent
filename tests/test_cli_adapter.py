@@ -40,6 +40,8 @@ class _StubApp:
         *,
         force_big_second: bool = False,
         force_fast: bool = False,
+        session_id=None,
+        session_store=None,
     ):
         self.ask_calls.append((question, force_big_second, force_fast))
         run_dir = Path(tempfile.mkdtemp())

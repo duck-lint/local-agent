@@ -2,11 +2,13 @@ from __future__ import annotations
 
 from array import array
 from datetime import date, datetime, timezone
+import dataclasses
 import heapq
 import json
 import math
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Optional
 
 from agent.embedder import Embedder
 from agent.embedding_fingerprint import normalize_vector, preprocess_query_text, unpack_vector_f32_le
@@ -35,6 +37,7 @@ class RetrievedChunk:
     method: str
     lexical_score: float
     vector_score: float
+    expansion_source: Optional[str] = None
 
 
 @dataclass(frozen=True)
@@ -56,7 +59,11 @@ class RetrievalResult:
     rerank_applied: bool
     rerank_intent: str
     rerank_signals_available: bool
-    candidates: list[RetrievedChunk]
+    neighbor_expansion_applied: bool = False
+    neighbor_scope: str = ""
+    neighbor_chunks_added: int = 0
+    neighbor_warnings: list[str] = field(default_factory=list)
+    candidates: list[RetrievedChunk] = field(default_factory=list)
 
 
 def retrieve(
@@ -74,9 +81,11 @@ def retrieve(
     vector_fetch_k: int = 0,
     rel_path_prefix: str = "",
     fusion: str,
+    rrf_k: int = 60,
 ) -> RetrievalResult:
-    if fusion != "simple_union":
+    if fusion not in ("simple_union", "rrf"):
         raise ValueError(f"Unsupported fusion strategy: {fusion}")
+    rrf_k_value = max(1, int(rrf_k))
 
     lexical_limit = max(1, int(lexical_k))
     vector_limit = max(1, int(vector_k))
@@ -98,6 +107,7 @@ def retrieve(
         lexical_backend_warning = str(lexical_rows[0].get("lexical_backend_warning") or lexical_backend_warning)
 
     lexical_ranked: dict[str, float] = {}
+    lexical_ranks: dict[str, int] = {}
     lexical_meta: dict[str, dict[str, object]] = {}
     lexical_count = max(1, len(lexical_rows))
     for rank, row in enumerate(lexical_rows, start=1):
@@ -105,7 +115,9 @@ def retrieve(
         if not chunk_key:
             continue
         score = 1.0 - ((rank - 1) / lexical_count)
-        lexical_ranked[chunk_key] = max(score, lexical_ranked.get(chunk_key, 0.0))
+        if score > lexical_ranked.get(chunk_key, -1.0):
+            lexical_ranked[chunk_key] = score
+            lexical_ranks[chunk_key] = rank
         lexical_meta[chunk_key] = {
             "doc_key": str(row.get("doc_key") or ""),
             "chunk_kind": str(row.get("chunk_kind") or ""),
@@ -162,6 +174,7 @@ def retrieve(
     filter_warning = "; ".join(warning_parts)
     vector_top = filtered_scored[:vector_limit]
     vector_ranked = {chunk_key: (score + 1.0) / 2.0 for score, chunk_key in vector_top}
+    vector_ranks = {chunk_key: idx for idx, (_, chunk_key) in enumerate(vector_top, start=1)}
 
     with connect_embeddings_db(embeddings_db_path) as embed_conn:
         row = embed_conn.execute("PRAGMA user_version").fetchone()
@@ -172,6 +185,10 @@ def retrieve(
         lexical_ranked=lexical_ranked,
         lexical_meta=lexical_meta,
         vector_ranked=vector_ranked,
+        lexical_ranks=lexical_ranks,
+        vector_ranks=vector_ranks,
+        strategy=fusion,
+        rrf_k=rrf_k_value,
     )
     reranked, rerank_applied, rerank_intent, rerank_signals_available = _apply_bounded_rerank(
         query=query,
@@ -196,6 +213,10 @@ def retrieve(
         rerank_applied=rerank_applied,
         rerank_intent=rerank_intent,
         rerank_signals_available=rerank_signals_available,
+        neighbor_expansion_applied=False,
+        neighbor_scope="",
+        neighbor_chunks_added=0,
+        neighbor_warnings=[],
         candidates=reranked,
     )
 
@@ -317,7 +338,16 @@ def _fuse_candidates(
     lexical_ranked: dict[str, float],
     lexical_meta: dict[str, dict[str, object]],
     vector_ranked: dict[str, float],
+    lexical_ranks: dict[str, int] | None = None,
+    vector_ranks: dict[str, int] | None = None,
+    strategy: str = "simple_union",
+    rrf_k: int = 60,
 ) -> list[RetrievedChunk]:
+    if strategy not in ("simple_union", "rrf"):
+        raise ValueError(f"Unsupported fusion strategy: {strategy}")
+    lex_ranks = lexical_ranks or {}
+    vec_ranks = vector_ranks or {}
+    rrf_k_value = max(1, int(rrf_k))
     all_keys = sorted(set(lexical_ranked) | set(vector_ranked))
     fetched = _fetch_chunk_metadata(corpus_db_path=corpus_db_path, chunk_keys=all_keys)
     out: list[RetrievedChunk] = []
@@ -326,13 +356,26 @@ def _fuse_candidates(
         vec = vector_ranked.get(chunk_key, 0.0)
         if lex > 0 and vec > 0:
             method = "both"
-            merged_score = (lex + vec) / 2.0
         elif lex > 0:
             method = "lexical"
-            merged_score = lex
         else:
             method = "vector"
-            merged_score = vec
+
+        if strategy == "rrf":
+            merged_score = 0.0
+            lex_rank = lex_ranks.get(chunk_key)
+            vec_rank = vec_ranks.get(chunk_key)
+            if lex_rank is not None:
+                merged_score += 1.0 / (rrf_k_value + lex_rank)
+            if vec_rank is not None:
+                merged_score += 1.0 / (rrf_k_value + vec_rank)
+        else:
+            if method == "both":
+                merged_score = (lex + vec) / 2.0
+            elif method == "lexical":
+                merged_score = lex
+            else:
+                merged_score = vec
 
         meta = fetched.get(chunk_key) or lexical_meta.get(chunk_key) or {}
         if not meta and lex <= 0.0:
@@ -481,3 +524,223 @@ def _reverse_chunk_key(chunk_key: str) -> str:
     if not chunk_key:
         return ""
     return bytes(255 - b for b in chunk_key.encode("utf-8", errors="replace")).decode("latin1")
+
+
+NEIGHBOR_SCOPES = ("adjacent_only", "same_section", "same_heading_path")
+
+
+def expand_neighbors(
+    result: RetrievalResult,
+    *,
+    corpus_db_path: Path,
+    scope: str,
+) -> RetrievalResult:
+    """Append same-document neighbor chunks to result.candidates based on scope.
+
+    Pure: only reads the corpus DB; does not mutate the input.
+    Dedup: a neighbor whose chunk_key already appears in result.candidates is skipped.
+    Original candidates retain their order and scores; neighbors are appended after them,
+    sorted deterministically by (rel_path, chunk_index). Each neighbor is constructed
+    with score=0.0, method="neighbor", lexical_score=0.0, vector_score=0.0,
+    expansion_source=<scope>.
+    """
+    if scope not in NEIGHBOR_SCOPES:
+        raise ValueError(
+            f"Unknown neighbor expansion scope: {scope!r} (expected one of {NEIGHBOR_SCOPES})"
+        )
+
+    from agent.corpus_db import fetch_neighbor_chunks
+
+    candidate_keys = {chunk.chunk_key for chunk in result.candidates}
+    warnings: list[str] = []
+
+    try:
+        with connect_corpus_db(corpus_db_path) as conn:
+            neighbor_dicts = fetch_neighbor_chunks(
+                conn,
+                chunk_keys=[chunk.chunk_key for chunk in result.candidates],
+                scope=scope,
+            )
+    except ValueError:
+        raise
+    except Exception as exc:  # noqa: BLE001 - degrade per plan, surface in warnings
+        warnings.append(f"neighbor_expansion_db_error: {exc}")
+        return dataclasses.replace(
+            result,
+            neighbor_expansion_applied=False,
+            neighbor_scope=scope,
+            neighbor_chunks_added=0,
+            neighbor_warnings=warnings,
+        )
+
+    seen: set[str] = set(candidate_keys)
+    new_neighbors: list[RetrievedChunk] = []
+    for nd in neighbor_dicts:
+        ckey = str(nd.get("chunk_key", ""))
+        if not ckey or ckey in seen:
+            continue
+        seen.add(ckey)
+        new_neighbors.append(
+            RetrievedChunk(
+                chunk_key=ckey,
+                doc_key=str(nd.get("doc_key", "")),
+                chunk_kind=str(nd.get("chunk_kind", "")),
+                rel_path=str(nd.get("rel_path", "")),
+                heading_path=str(nd.get("heading_path", "")),
+                chunk_anchor=str(nd.get("chunk_anchor", "")),
+                chunk_title=str(nd.get("chunk_title", "")),
+                text=str(nd.get("text", "")),
+                score=0.0,
+                method="neighbor",
+                lexical_score=0.0,
+                vector_score=0.0,
+                expansion_source=scope,
+            )
+        )
+
+    chunk_index_map = {str(d.get("chunk_key", "")): int(d.get("chunk_index", 0)) for d in neighbor_dicts}
+    new_neighbors.sort(key=lambda c: (c.rel_path, chunk_index_map.get(c.chunk_key, 0)))
+
+    return dataclasses.replace(
+        result,
+        neighbor_expansion_applied=True,
+        neighbor_scope=scope,
+        neighbor_chunks_added=len(new_neighbors),
+        neighbor_warnings=warnings,
+        candidates=list(result.candidates) + new_neighbors,
+    )
+
+
+@dataclass(frozen=True)
+class RefinementRound:
+    round_index: int
+    query_used: str
+    rewrite: Optional[dict]
+    result: RetrievalResult
+
+
+@dataclass(frozen=True)
+class RefinementOutcome:
+    final_result: RetrievalResult
+    rounds: list[RefinementRound]
+    coverage: Optional[dict]
+    rewritten_query: str
+    refinement_applied: bool
+
+
+def retrieve_with_refinement(
+    query: str,
+    *,
+    app_config,
+    corpus_db_path: Path,
+    embeddings_db_path: Path,
+    embedder: Embedder,
+    embed_model_id: str,
+    preprocess_name: str,
+    chunk_preprocess_sig: str,
+    query_preprocess_sig: str,
+    memory: object | None = None,
+) -> RefinementOutcome:
+    """Phase 2 retrieval orchestrator.
+
+    1. Run round 1 with the original query.
+    2. If refinement_round_enabled: compute coverage on round-1 top_n candidates.
+    3. If coverage.should_refine AND rewrite.rule_based_enabled AND rewrite is non-identity:
+       run round 2 with the rewritten query, then merge candidates (round 1 first,
+       round 2 only contributes new chunk_keys). If round 2 adds zero new candidates,
+       degrade to round-1 result (refinement_applied stays False).
+    4. If neighbor_expansion_enabled: expand neighbors on the FINAL merged result
+       (so neighbors are sourced from both rounds' chunks combined).
+    """
+    retrieval_cfg = app_config.retrieval
+    common_kwargs = dict(
+        corpus_db_path=corpus_db_path,
+        embeddings_db_path=embeddings_db_path,
+        embedder=embedder,
+        embed_model_id=embed_model_id,
+        preprocess_name=preprocess_name,
+        chunk_preprocess_sig=chunk_preprocess_sig,
+        query_preprocess_sig=query_preprocess_sig,
+        lexical_k=retrieval_cfg.lexical_k,
+        vector_k=retrieval_cfg.vector_k,
+        vector_fetch_k=retrieval_cfg.vector_fetch_k,
+        rel_path_prefix=retrieval_cfg.rel_path_prefix,
+        fusion=retrieval_cfg.fusion,
+        rrf_k=retrieval_cfg.rrf_k,
+    )
+
+    r1 = retrieve(query, **common_kwargs)
+    rounds: list[RefinementRound] = [
+        RefinementRound(round_index=1, query_used=query, rewrite=None, result=r1)
+    ]
+    coverage_dict: Optional[dict] = None
+    rewritten_query = ""
+    refinement_applied = False
+    final_result = r1
+
+    if retrieval_cfg.refinement_round_enabled:
+        from agent.coverage import compute_coverage
+
+        cov_cfg = retrieval_cfg.coverage_predicate
+        top_n = max(1, int(cov_cfg.top_n))
+        # Effective memory_weight: session-level override takes precedence when
+        # memory is actually provided AND non-zero; falls back to the static
+        # coverage_predicate.memory_weight otherwise.
+        session_weight = float(getattr(getattr(app_config, "session", None), "coverage_memory_weight", 0.0) or 0.0)
+        effective_memory_weight = session_weight if (memory is not None and session_weight > 0.0) else float(cov_cfg.memory_weight)
+        cov = compute_coverage(
+            query,
+            r1.candidates[:top_n],
+            lexical_threshold=float(cov_cfg.lexical_threshold),
+            vector_threshold=float(cov_cfg.vector_threshold),
+            memory=memory,
+            memory_weight=effective_memory_weight,
+        )
+        coverage_dict = cov.to_dict()
+
+        if cov.should_refine and retrieval_cfg.rewrite.rule_based_enabled:
+            from agent.rewrite import rule_based_rewrite
+
+            # Memory contributes seeds to rewrite only when session.memory_rewrite_enabled.
+            memory_for_rewrite = memory if bool(getattr(getattr(app_config, "session", None), "memory_rewrite_enabled", False)) else None
+            rw = rule_based_rewrite(
+                query,
+                acronyms=retrieval_cfg.rewrite.acronyms,
+                synonyms=retrieval_cfg.rewrite.synonyms,
+                memory=memory_for_rewrite,
+            )
+            if not rw.is_identity() and rw.rewritten and rw.rewritten != query:
+                rewritten_query = rw.rewritten
+                r2 = retrieve(rw.rewritten, **common_kwargs)
+                rounds.append(
+                    RefinementRound(
+                        round_index=2,
+                        query_used=rw.rewritten,
+                        rewrite=rw.to_dict(),
+                        result=r2,
+                    )
+                )
+                seen = {c.chunk_key for c in r1.candidates}
+                added = [c for c in r2.candidates if c.chunk_key not in seen]
+                if added:
+                    refinement_applied = True
+                    final_result = dataclasses.replace(
+                        r1, candidates=list(r1.candidates) + added
+                    )
+                # else: degrade to r1, refinement_applied stays False
+
+    if retrieval_cfg.neighbor_expansion_enabled:
+        final_result = expand_neighbors(
+            final_result,
+            corpus_db_path=corpus_db_path,
+            scope=retrieval_cfg.neighbor_scope,
+        )
+
+    return RefinementOutcome(
+        final_result=final_result,
+        rounds=rounds,
+        coverage=coverage_dict,
+        rewritten_query=rewritten_query,
+        refinement_applied=refinement_applied,
+    )
+

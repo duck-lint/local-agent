@@ -57,12 +57,34 @@ class EmbeddingsConfig:
 
 
 @dataclass(frozen=True)
+class CoveragePredicateConfig:
+    lexical_threshold: float = 0.5
+    vector_threshold: float = 0.5
+    memory_weight: float = 0.0
+    top_n: int = 10
+
+
+@dataclass(frozen=True)
+class RewriteConfig:
+    rule_based_enabled: bool = False
+    acronyms_path: str = "configs/acronyms.yaml"
+    acronyms: dict = field(default_factory=dict)
+    synonyms: dict = field(default_factory=dict)
+
+
+@dataclass(frozen=True)
 class RetrievalConfig:
     lexical_k: int
     vector_k: int
     vector_fetch_k: int
     rel_path_prefix: str
     fusion: str
+    rrf_k: int = 60
+    neighbor_expansion_enabled: bool = False
+    neighbor_scope: str = "adjacent_only"
+    refinement_round_enabled: bool = False
+    coverage_predicate: CoveragePredicateConfig = field(default_factory=CoveragePredicateConfig)
+    rewrite: RewriteConfig = field(default_factory=RewriteConfig)
 
 
 @dataclass(frozen=True)
@@ -94,6 +116,34 @@ class MemoryConfig:
 
 
 @dataclass(frozen=True)
+class DaemonConfig:
+    enabled: bool = False
+    bind_host: str = "127.0.0.1"
+    bind_port: int = 47921
+    idle_timeout_s: int = 1800
+    request_timeout_s: int = 5
+
+
+@dataclass(frozen=True)
+class PromotionConfig:
+    enabled: bool = False
+    llm_suggest_enabled: bool = False
+
+
+@dataclass(frozen=True)
+class SessionConfig:
+    enabled: bool = False
+    sessions_dir: str = "sessions"
+    topic_summary_top_k: int = 8
+    max_active_refs: int = 10
+    max_bundle_ids: int = 5
+    require_daemon_for_cli: bool = True
+    memory_rewrite_enabled: bool = False
+    coverage_memory_weight: float = 0.0
+    promotion: PromotionConfig = field(default_factory=PromotionConfig)
+
+
+@dataclass(frozen=True)
 class AppConfig:
     model: str
     model_fast: str
@@ -115,6 +165,8 @@ class AppConfig:
     grounding: GroundingConfig
     runs: RunsConfig
     memory: MemoryConfig
+    daemon: DaemonConfig = field(default_factory=DaemonConfig)
+    session: SessionConfig = field(default_factory=SessionConfig)
 
 
 @dataclass(frozen=True)

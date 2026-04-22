@@ -58,14 +58,15 @@ class RuntimeAppTests(unittest.TestCase):
             with patch("agent.grounding.ensure_ollama_up"):
                 with patch("agent.grounding.create_embedder", side_effect=dummy_embedder_factory):
                     grounded_retrieval = []
-                    original_retrieve = grounding_module.retrieve
+                    from agent.retrieval import retrieve as _retrieve_fn
+                    original_retrieve = _retrieve_fn
 
                     def capture_grounded_retrieval(*args, **kwargs):
                         result = original_retrieve(*args, **kwargs)
                         grounded_retrieval.append(result)
                         return result
 
-                    with patch("agent.grounding.retrieve", side_effect=capture_grounded_retrieval):
+                    with patch("agent.retrieval.retrieve", side_effect=capture_grounded_retrieval):
                         with patch("agent.grounding.ollama_chat", return_value={"message": {"content": answer_text}}):
                             grounded = app.answer_grounded("Where is alpha evidence?")
 

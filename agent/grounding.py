@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from agent.app_types import AppConfig, GroundedAnswerResult
+from agent.budget import BudgetExceededError, BudgetTracker
 from agent.citation_audit import (
     build_evidence_log_entries,
     count_citation_markers,
@@ -14,8 +15,15 @@ from agent.citation_audit import (
 )
 from agent.embeddings import create_embedder, ensure_runtime_dirs, parse_embed_runtime, resolve_embeddings_db_path
 from agent.ollama_client import ensure_ollama_up, get_assistant_text, ollama_chat
-from agent.retrieval import RetrievalResult, retrieve
+from agent.retrieval import RetrievalResult, expand_neighbors, retrieve, retrieve_with_refinement
 from agent.runtime import make_run_dir, now_unix, strip_thinking
+from agent.session_memory import (
+    ChunkRef,
+    SessionState,
+    SessionStoreError,
+    compute_state_update,
+    make_bundle_id,
+)
 
 
 def render_citation(rel_path: str, heading_path: str, chunk_key: str) -> str:
@@ -68,11 +76,14 @@ def answer_grounded(
     answer_model: str,
     force_big_second: bool = False,
     force_fast: bool = False,
+    session_id: str | None = None,
+    session_store: object | None = None,
 ) -> GroundedAnswerResult:
     _ = force_big_second, force_fast
     ensure_runtime_dirs(security_root)
     run_dir = make_run_dir(security_root)
     started = now_unix()
+    budget = BudgetTracker(wall_clock_s=10.0, max_prompt_tokens=2000)
     record: dict[str, object] = {
         "run_id": run_dir.name,
         "mode": "ask",
@@ -80,10 +91,27 @@ def answer_grounded(
         "started_unix": started,
         "ollama_base_url": app_config.ollama_base_url,
         "retrieval": None,
+        "retrieval_rounds": [],
+        "coverage": None,
+        "memory_snapshot": None,
+        "budget": budget.snapshot(),
         "citation_validation": None,
     }
     try:
         ensure_ollama_up(app_config.ollama_base_url, timeout_s=app_config.timeout_s)
+        # ---- Phase 3 session memory: snapshot at start (read-only). -------
+        session_state_at_start: SessionState | None = None
+        session_active = bool(
+            app_config.session.enabled and session_id and session_store is not None
+        )
+        if session_active:
+            try:
+                session_state_at_start = session_store.get(session_id)  # type: ignore[union-attr]
+            except SessionStoreError as exc:
+                record["session_error"] = f"load: {type(exc).__name__}: {exc}"
+                session_active = False
+            else:
+                record["memory_snapshot"] = session_state_at_start.to_snapshot_dict()
         provider, model_id, preprocess_name, chunk_preprocess_sig, query_preprocess_sig, _ = parse_embed_runtime(
             app_config.embeddings
         )
@@ -92,8 +120,9 @@ def answer_grounded(
             base_url=app_config.ollama_base_url,
             timeout_s=app_config.timeout_s,
         )
-        retrieval_result = retrieve(
+        outcome = retrieve_with_refinement(
             question,
+            app_config=app_config,
             corpus_db_path=corpus_db_path,
             embeddings_db_path=resolve_embeddings_db_path(app_config.embeddings, security_root),
             embedder=embedder,
@@ -101,12 +130,10 @@ def answer_grounded(
             preprocess_name=preprocess_name,
             chunk_preprocess_sig=chunk_preprocess_sig,
             query_preprocess_sig=query_preprocess_sig,
-            lexical_k=app_config.retrieval.lexical_k,
-            vector_k=app_config.retrieval.vector_k,
-            vector_fetch_k=app_config.retrieval.vector_fetch_k,
-            rel_path_prefix=app_config.retrieval.rel_path_prefix,
-            fusion=app_config.retrieval.fusion,
+            memory=session_state_at_start,
         )
+        retrieval_result = outcome.final_result
+        budget.check_pre_generation("retrieval_complete")
         prompt_candidates = retrieval_result.candidates[: app_config.grounding.evidence_top_n]
         evidence_rows = {}
         if prompt_candidates:
@@ -143,11 +170,41 @@ def answer_grounded(
             "rerank_applied": retrieval_result.rerank_applied,
             "rerank_intent": retrieval_result.rerank_intent,
             "rerank_signals_available": retrieval_result.rerank_signals_available,
+            "neighbor_expansion_applied": retrieval_result.neighbor_expansion_applied,
+            "neighbor_scope": retrieval_result.neighbor_scope,
+            "neighbor_chunks_added": retrieval_result.neighbor_chunks_added,
+            "neighbor_warnings": list(retrieval_result.neighbor_warnings),
             "candidates_count": len(retrieval_result.candidates),
             "results": evidence_entries,
             "logging_truncated_total": bool(logging_truncated_total),
             "results_omitted_count": int(omitted_count),
         }
+        if len(outcome.rounds) <= 1:
+            # Refinement off (or round-2 not fired): keep back-compat single-entry list
+            # whose sole element is identical to record["retrieval"].
+            record["retrieval_rounds"] = [record["retrieval"]]
+        else:
+            round_dicts: list[dict] = []
+            for rnd in outcome.rounds:
+                rr = rnd.result
+                round_dicts.append({
+                    "round_index": rnd.round_index,
+                    "query_used": rnd.query_used,
+                    "rewrite": rnd.rewrite,
+                    "query": rr.query,
+                    "candidates_count": len(rr.candidates),
+                    "lexical_backend_mode": rr.lexical_backend_mode,
+                    "vector_candidates_scored": rr.vector_candidates_scored,
+                    "vector_candidates_postfilter": rr.vector_candidates_postfilter,
+                    "rerank_applied": rr.rerank_applied,
+                    "neighbor_expansion_applied": rr.neighbor_expansion_applied,
+                    "neighbor_chunks_added": rr.neighbor_chunks_added,
+                    "neighbor_warnings": list(rr.neighbor_warnings),
+                })
+            record["retrieval_rounds"] = round_dicts
+        record["coverage"] = outcome.coverage
+        record["refinement_applied"] = outcome.refinement_applied
+        record["rewritten_query"] = outcome.rewritten_query
 
         raw_answer_text = insufficient_evidence_text(question)
         second = None
@@ -186,6 +243,35 @@ def answer_grounded(
         record["citation_validation"] = citation_report
         record["citation_validation_footer"] = footer
 
+        def _persist_session_if_active() -> None:
+            if not session_active or session_state_at_start is None or session_store is None:
+                return
+            try:
+                refs = [
+                    ChunkRef(
+                        chunk_key=item.chunk_key,
+                        doc_key=item.doc_key,
+                        rel_path=item.rel_path,
+                        heading_path=item.heading_path,
+                    )
+                    for item in prompt_candidates[: app_config.session.max_active_refs]
+                ]
+                new_state = compute_state_update(
+                    previous=session_state_at_start,
+                    query=question,
+                    answer_text=raw_answer_text,
+                    final_chunk_refs=refs,
+                    bundle_id=make_bundle_id(run_id=run_dir.name, candidates=prompt_candidates),
+                    max_active_refs=app_config.session.max_active_refs,
+                    max_bundle_ids=app_config.session.max_bundle_ids,
+                    topic_top_k=app_config.session.topic_summary_top_k,
+                    now_unix=now_unix(),
+                )
+                session_store.save(new_state)  # type: ignore[union-attr]
+                record["session_state_after"] = new_state.to_dict()
+            except (SessionStoreError, ValueError) as exc:  # pragma: no cover - defensive
+                record["session_error"] = f"save: {type(exc).__name__}: {exc}"
+
         final_text = raw_answer_text
         if not retrieval_result.candidates:
             final_text = insufficient_evidence_text(question)
@@ -206,6 +292,7 @@ def answer_grounded(
                 record["error_message"] = error_message
                 if second is not None:
                     record["raw_second"] = strip_thinking(second)
+                _persist_session_if_active()
                 return GroundedAnswerResult(
                     ok=False,
                     text=final_text,
@@ -219,6 +306,7 @@ def answer_grounded(
         record["ok"] = True
         if second is not None:
             record["raw_second"] = strip_thinking(second)
+        _persist_session_if_active()
         return GroundedAnswerResult(
             ok=True,
             text=f"{final_text}\n{footer}" if app_config.grounding.citation_validation.enabled else final_text,
@@ -229,4 +317,5 @@ def answer_grounded(
     finally:
         record["ended_unix"] = now_unix()
         record["elapsed_s"] = round(float(record["ended_unix"]) - started, 3)
+        record["budget"] = budget.snapshot()
         (run_dir / "run.json").write_text(json.dumps(record, indent=2, ensure_ascii=False), encoding="utf-8")

@@ -1,0 +1,10 @@
+# Phase 2 deterministic query-rewrite maps. Both default to empty.
+# Operators may add entries; the rewriter is case-insensitive on keys.
+# Format:
+#   acronyms:
+#     api: "application programming interface"
+#     llm: "large language model"
+#   synonyms:
+#     bug: "defect issue regression"
+acronyms: {}
+synonyms: {}
